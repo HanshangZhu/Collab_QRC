@@ -154,6 +154,9 @@ qrc_report_and_agenda.md
 # Prebuilt vendor binaries (not source)
 # =============================================
 /src/vendor/tare_planner/or-tools/
+/src/vendor/tare_planner/install/
+/src/vendor/tare_planner/build/
+/src/vendor/tare_planner/log/
 /src/vendor/Livox-SDK2/build/
 /src/collaborative_exploration/go2_tare_planner_ros2/generated/tare_planner/or-tools/
 
