@@ -1,0 +1,16 @@
+version: '3.8'
+services:
+  sim:
+    image: collab-qrc-sim
+    volumes:
+      - ..:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      - DISPLAY=host.docker.internal:0
+      - MUJOCO_GL=osmesa
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/workspace/config/fastdds_no_shm.xml
+    network_mode: host
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: bash
