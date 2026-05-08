@@ -22,8 +22,8 @@ _WHEEL_ACTUATORS = ["FL_wheel", "FR_wheel", "RL_wheel", "RR_wheel"]
 WHEEL_RADIUS = 0.05   # m (cylinder geom size[0] in go2w_base.xml)
 TRACK_WIDTH  = 0.284  # m (2 * (hip_y + thigh_y offset) ≈ 2 * 0.142)
 
-KP = 40.0  # N·m/rad
-KD = 2.0   # N·m·s/rad
+KP = 80.0  # N·m/rad
+KD = 3.0   # N·m·s/rad
 
 
 class WheelDirectController:
