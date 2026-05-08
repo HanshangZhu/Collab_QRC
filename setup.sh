@@ -9,9 +9,9 @@
 #
 # Requires: Ubuntu 22.04 (Jammy), sudo access, internet.
 #
-# Sim-only by default. Real-robot Livox Mid-360 bringup is gated behind
-# src/vendor/{Livox-SDK2,livox_ros_driver2}/COLCON_IGNORE markers — remove
-# them and follow docs/claude/real_robot.md to build them separately.
+# Sim-only by default: Livox-SDK2 is plain CMake (see COLCON_IGNORE there).
+# livox_ros_driver2 is a normal ROS 2 package — build it after installing Livox-SDK2
+# (Docker image installs to /usr/local; real robot: docs/claude/real_robot.md).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -191,11 +191,13 @@ touch src/vendor/autonomy_stack_go2/COLCON_IGNORE
 touch src/vendor/mujoco_ros2_control/examples/COLCON_IGNORE
 
 # Livox-SDK2 is a pure CMake lib (no package.xml) that colcon's CMake detector
-# still picks up; upstream also ships a broken vendored spdlog that references
-# a non-existent bundled/core.h. Ignore for sim builds.
-# Real Mid-360 bringup: delete these markers and follow real_robot.md.
+# still picks up as package name livox_sdk2; ignore it — SDK is installed for
+# livox_ros_driver2 via Dockerfile or workspace-local cmake (real_robot.md).
 touch src/vendor/Livox-SDK2/COLCON_IGNORE
-touch src/vendor/livox_ros_driver2/COLCON_IGNORE
+
+# ROS 1 / duplicate-name packages (also committed; touch is idempotent).
+touch src/vendor/sc_pgo/fast_lio_sam/COLCON_IGNORE
+touch src/collaborative_exploration/go2_tare_planner_ros2/generated/tare_planner/COLCON_IGNORE
 
 # Bundled ROS 1 sub-workspace — reference only.
 touch src/mtare_ros1_ws/COLCON_IGNORE 2>/dev/null || true
@@ -251,7 +253,8 @@ touch src/mtare_ros1_ws/COLCON_IGNORE 2>/dev/null || true
 touch src/vendor/autonomy_stack_go2/COLCON_IGNORE 2>/dev/null || true
 touch src/vendor/mujoco_ros2_control/examples/COLCON_IGNORE 2>/dev/null || true
 touch src/vendor/Livox-SDK2/COLCON_IGNORE 2>/dev/null || true
-touch src/vendor/livox_ros_driver2/COLCON_IGNORE 2>/dev/null || true
+touch src/vendor/sc_pgo/fast_lio_sam/COLCON_IGNORE 2>/dev/null || true
+touch src/collaborative_exploration/go2_tare_planner_ros2/generated/tare_planner/COLCON_IGNORE 2>/dev/null || true
 mkdir -p src/vendor/tare_planner/data
 
 # Conda's libqhull_r (pulled by PCL find_package) transitively needs

@@ -166,11 +166,8 @@ Keys go in `.env.xai` at repo root (or exported).
 micromamba activate cmu_env
 source /opt/ros/humble/setup.bash
 
-# Mark the non-buildable vendored sources before the first colcon invocation.
-# COLCON_IGNORE is gitignored (see .gitignore), so each clone must recreate it.
-touch src/vendor/autonomy_stack_go2/COLCON_IGNORE  \
-      src/vendor/Livox-SDK2/COLCON_IGNORE          \
-      src/vendor/sc_pgo/fast_lio_sam/COLCON_IGNORE
+# Vendored COLCON_IGNORE markers are committed under paths listed below (.gitignore
+# whitelists those files). No manual `touch` needed unless you add a new skip marker.
 
 colcon build --symlink-install --cmake-clean-cache \
   --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python3
@@ -183,10 +180,20 @@ source install/setup.bash
 | Path | Why ignored |
 | --- | --- |
 | `src/vendor/autonomy_stack_go2/` | CMU upstream, vendored as reference; the active FAR / terrain_analysis / localPlanner builds live in their own packages. |
-| `src/vendor/Livox-SDK2/` | Plain CMake library, not a colcon package; built workspace-local by `livox_ros_driver2`'s own install step. |
-| `src/vendor/sc_pgo/fast_lio_sam/` | ROS 1 (catkin) — see `PORT_TO_ROS2.md` next to it. The active SC-PGO loop closure path uses a different sub-tree. |
+| `src/vendor/Livox-SDK2/` | Plain CMake library, not a colcon package; colcon would expose it as `livox_sdk2` and clash with the workspace-local install used by `livox_ros_driver2`. |
+| `src/vendor/sc_pgo/fast_lio_sam/` | ROS 1 (catkin) — see `PORT_TO_ROS2.md` next to it. |
+| `src/collaborative_exploration/go2_tare_planner_ros2/generated/tare_planner/` | ROS 1 catkin output sitting next to ROS 2 `go2_tare_planner_ros2`; would duplicate the package name `tare_planner` vs `vendor/tare_planner`. |
 
 YAML + Python are live via symlink-install; C++ requires rebuild.
+
+Before `colcon build`, optional sanity check (duplicate package names + CMake↔package.xml deps):
+
+```bash
+python3 scripts/ops/workspace_colcon_audit.py
+```
+
+If CMake reports `Could not find package X` for a **workspace** package, build dependencies first:
+`colcon build --symlink-install --packages-up-to <that_pkg>`.
 
 ## Golden Rules
 

@@ -28,14 +28,14 @@ Docker runs Ubuntu 22.04 container on Mac. XQuartz forwards GUI windows (MuJoCo 
 
 ### 3. Build Docker Image (~10 min)
 ```bash
-cd /Users/harmishzala/Documents/UCL/Group\ project/Collab_QRC
-docker build -f docker/sim.Dockerfile -t collab-qrc-sim .
+cd "/Volumes/Harmish SSD/Collab_QRC"
+docker compose -f docker/docker-compose.sim.yml build
 ```
 
 ### 4. Build ROS Workspace inside Docker (~20 min)
 Artifacts write to host via volume mount and persist after container exits.
 ```bash
-cd /Users/harmishzala/Documents/UCL/Group\ project/Collab_QRC
+cd "/Volumes/Harmish SSD/Collab_QRC"
 docker run --rm \
   -v "$(pwd)":/workspace \
   collab-qrc-sim \
@@ -54,7 +54,7 @@ docker run --rm \
 ## Every Session
 
 ```bash
-cd /Users/harmishzala/Documents/UCL/Group\ project/Collab_QRC
+cd "/Volumes/Harmish SSD/Collab_QRC"
 
 # Open Docker shell (starts XQuartz + ROS sourced automatically)
 ./docker/run_sim.sh
@@ -67,10 +67,10 @@ cd /Users/harmishzala/Documents/UCL/Group\ project/Collab_QRC
 
 ## Current Status (2026-05-06)
 - [x] XQuartz installed + configured
-- [ ] Mac restart pending
-- [ ] Docker Desktop install + start
-- [ ] Docker image build (`collab-qrc-sim`)
-- [ ] ROS workspace build (`colcon build`)
+- [ ] Mac restart pending (required before GUI works)
+- [x] Docker Desktop install + start
+- [x] Docker image build (`collab-qrc-sim`)
+- [ ] ROS workspace build (`colcon build`) — in progress
 - [ ] First sim run
 
 ---
@@ -85,6 +85,7 @@ cd /Users/harmishzala/Documents/UCL/Group\ project/Collab_QRC
 | Build errors in colcon | Check `log/latest_build/` inside container for per-package errors |
 
 ## Caveats
-- `MUJOCO_GL=osmesa` = software rendering (slower but reliable on Mac+Docker)
+- **`MUJOCO_GL=glfw`** (default in `run_sim.sh` / compose) = MuJoCo viewer window through XQuartz. If the window fails to open, try `LIBGL_ALWAYS_INDIRECT=1` in the container.
+- **`MUJOCO_GL=osmesa`** = software off-screen only (no interactive viewer). Use for headless: `MUJOCO_GL=osmesa ./docker/run_sim.sh`
 - VLM demos need `.env.xai` at repo root with `XAI_API_KEY=...`
 - YAML/Python changes: instant (symlink-install). C++ changes: need `colcon build` again.

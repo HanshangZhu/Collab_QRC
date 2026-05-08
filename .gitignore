@@ -5,6 +5,11 @@
 /install/
 /log/
 COLCON_IGNORE
+# Allow committing intentional workspace markers (see README Build section).
+!src/vendor/sc_pgo/fast_lio_sam/COLCON_IGNORE
+!src/vendor/Livox-SDK2/COLCON_IGNORE
+!src/vendor/autonomy_stack_go2/COLCON_IGNORE
+!src/collaborative_exploration/go2_tare_planner_ros2/generated/tare_planner/COLCON_IGNORE
 
 # =============================================
 # ROS 1 legacy (catkin)

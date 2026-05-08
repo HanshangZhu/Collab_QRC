@@ -15,7 +15,7 @@
   <depend>geometry_msgs</depend>
   <depend>visibility_graph_msg</depend>
   <depend>pcl_conversions</depend>
-  <depend>PCL</depend>
+  <!-- PCL: CMake find_package(PCL); not a ROS package name — do not use <depend>PCL>. -->
 
   <!-- Optional: Test dependencies -->
   <!-- <test_depend>ament_lint_auto</test_depend> -->

@@ -1,13 +1,17 @@
-version: '3.8'
 services:
   sim:
+    platform: linux/amd64
     image: collab-qrc-sim
+    build:
+      context: ..
+      dockerfile: docker/sim.Dockerfile
     volumes:
       - ..:/workspace
       - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
       - DISPLAY=host.docker.internal:0
-      - MUJOCO_GL=osmesa
+      # glfw: MuJoCo viewer window via XQuartz. Use MUJOCO_GL=osmesa for headless only.
+      - MUJOCO_GL=glfw
       - FASTRTPS_DEFAULT_PROFILES_FILE=/workspace/config/fastdds_no_shm.xml
     network_mode: host
     working_dir: /workspace

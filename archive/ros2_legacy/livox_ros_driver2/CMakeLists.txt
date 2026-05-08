@@ -228,6 +228,14 @@ else(ROS_EDITION STREQUAL "ROS2")
   find_package(builtin_interfaces REQUIRED)
   find_package(rosidl_default_generators REQUIRED)
 
+  # build.sh passes -DDISTRO_ROS=...; plain colcon often runs cmake with no ROS_* env vars.
+  if(NOT DISTRO_ROS AND NOT "$ENV{ROS_DISTRO}" STREQUAL "")
+    set(DISTRO_ROS "$ENV{ROS_DISTRO}")
+  endif()
+  if(NOT DISTRO_ROS)
+    set(DISTRO_ROS "humble")
+  endif()
+
   # check apr
   find_package(PkgConfig)
   pkg_check_modules(APR apr-1)
@@ -289,15 +297,16 @@ else(ROS_EDITION STREQUAL "ROS2")
 
   target_include_directories(${PROJECT_NAME} PRIVATE ${livox_sdk_INCLUDE_DIRS})
 
-  # get include directories of custom msg headers
+  # Custom msg headers: Humble+ use rosidl typesupport target (includes come via INTERFACE).
+  # Legacy path sets LIVOX_INTERFACES_INCLUDE_DIRECTORIES from the typesupport target.
   if(DISTRO_ROS STREQUAL "humble" OR DISTRO_ROS STREQUAL "jazzy")
     rosidl_get_typesupport_target(cpp_typesupport_target
-    ${LIVOX_INTERFACES} "rosidl_typesupport_cpp")
-    target_link_libraries(${PROJECT_NAME} "${cpp_typesupport_target}")
+      ${LIVOX_INTERFACES} "rosidl_typesupport_cpp")
   else()
     set(LIVOX_INTERFACE_TARGET "${LIVOX_INTERFACES}__rosidl_typesupport_cpp")
     add_dependencies(${PROJECT_NAME} ${LIVOX_INTERFACES})
-    get_target_property(LIVOX_INTERFACES_INCLUDE_DIRECTORIES ${LIVOX_INTERFACE_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+    get_target_property(LIVOX_INTERFACES_INCLUDE_DIRECTORIES ${LIVOX_INTERFACE_TARGET}
+      INTERFACE_INCLUDE_DIRECTORIES)
   endif()
 
   # include file direcotry
@@ -305,20 +314,28 @@ else(ROS_EDITION STREQUAL "ROS2")
     ${PCL_INCLUDE_DIRS}
     ${APR_INCLUDE_DIRS}
     ${LIVOX_LIDAR_SDK_INCLUDE_DIR}
-    ${LIVOX_INTERFACES_INCLUDE_DIRECTORIES}   # for custom msgs
     3rdparty
     src
   )
+  if(NOT (DISTRO_ROS STREQUAL "humble" OR DISTRO_ROS STREQUAL "jazzy"))
+    if(LIVOX_INTERFACES_INCLUDE_DIRECTORIES AND NOT LIVOX_INTERFACES_INCLUDE_DIRECTORIES STREQUAL "LIVOX_INTERFACES_INCLUDE_DIRECTORIES-NOTFOUND")
+      target_include_directories(${PROJECT_NAME} PUBLIC ${LIVOX_INTERFACES_INCLUDE_DIRECTORIES})
+    endif()
+  endif()
 
   # link libraries
   target_link_libraries(${PROJECT_NAME}
     ${LIVOX_LIDAR_SDK_LIBRARY}
-    ${LIVOX_INTERFACE_TARGET}   # for custom msgs
     ${PPT_LIBRARY}
     ${Boost_LIBRARY}
     ${PCL_LIBRARIES}
     ${APR_LIBRARIES}
   )
+  if(DISTRO_ROS STREQUAL "humble" OR DISTRO_ROS STREQUAL "jazzy")
+    target_link_libraries(${PROJECT_NAME} "${cpp_typesupport_target}")
+  else()
+    target_link_libraries(${PROJECT_NAME} ${LIVOX_INTERFACE_TARGET})
+  endif()
 
   rclcpp_components_register_node(${PROJECT_NAME}
     PLUGIN "livox_ros::DriverNode"

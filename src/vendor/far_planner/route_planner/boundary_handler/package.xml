@@ -18,9 +18,7 @@
   <depend>visualization_msgs</depend>
   <depend>visibility_graph_msg</depend>
   
-  <!-- The below dependencies are system dependencies and may need to be reflected in the CMake as well. -->
-  <depend>PCL</depend>
-  <depend>OpenCV</depend>
+  <!-- PCL / OpenCV: found via CMake find_package(PCL/OpenCV); not ROS packages — do not use <depend>. -->
 
   <export>
     <build_type>ament_cmake</build_type>
