@@ -201,24 +201,72 @@ def main() -> None:
     cfpa2.set_parameter("verbose_logs", cfpa2_cfg["verbose_logs"])
     cfpa2.set_parameter("planning_map_topic_suffix", "/map")
 
-    # ── Goal pose → planner bridge ─────────────────────────────────────────────
-    _current_grid: list = [None]  # shared mutable ref
+    # ── Goal pose → planner bridge + periodic replan ─────────────────────────
+    # See main_champ.py for design notes. Mirrors the original ROS2
+    # default_nav.py AsyncGridPlanner (replan every ~1 s + path-blocked check).
+    _current_grid: list = [None]
+    _active_goal: list = [None]
+    _last_replan_t: list = [-1.0]
+    REPLAN_PERIOD_SEC = 1.0
+    PATH_CHECK_SAMPLE = 3
 
-    def _on_goal(msg) -> None:
-        gx = msg.pose.position.x
-        gy = msg.pose.position.y
+    def _plan_and_apply(gx: float, gy: float, reason: str) -> bool:
         pose = env.get_pose2d()
         grid = _current_grid[0]
         if grid is None:
-            return
+            return False
         path = planner.plan(grid, (pose[0], pose[1]), (gx, gy))
         if path:
             controller.set_path(path)
-            log.info(f"New path to ({gx:.2f},{gy:.2f}) — {len(path)} wps")
-        else:
-            log.warning(f"No path to ({gx:.2f},{gy:.2f})")
+            log.info(f"[{reason}] path to ({gx:.2f},{gy:.2f}) — {len(path)} wps")
+            return True
+        log.warning(f"[{reason}] no path to ({gx:.2f},{gy:.2f})")
+        return False
+
+    def _path_blocked(grid, path) -> bool:
+        if grid is None or not path:
+            return False
+        res = grid.info.resolution
+        ox = grid.info.origin.position.x
+        oy = grid.info.origin.position.y
+        W = grid.info.width
+        H = grid.info.height
+        data = grid.data
+        for i, (wx, wy) in enumerate(path):
+            if i % PATH_CHECK_SAMPLE:
+                continue
+            cx = int((wx - ox) / res)
+            cy = int((wy - oy) / res)
+            if 0 <= cx < W and 0 <= cy < H:
+                if data[cy * W + cx] >= 50:
+                    return True
+        return False
+
+    def _on_goal(msg) -> None:
+        gx = float(msg.pose.position.x)
+        gy = float(msg.pose.position.y)
+        _active_goal[0] = (gx, gy)
+        if _plan_and_apply(gx, gy, "new_goal"):
+            _last_replan_t[0] = env.time
 
     BUS.subscribe(f"/{ns}/goal_pose", _on_goal)
+
+    def _maybe_replan() -> None:
+        goal = _active_goal[0]
+        if goal is None or _current_grid[0] is None:
+            return
+        if controller.goal_reached:
+            return
+        now = env.time
+        blocked = _path_blocked(_current_grid[0], list(controller._path))
+        if blocked or now - _last_replan_t[0] >= REPLAN_PERIOD_SEC:
+            reason = "blocked" if blocked else "periodic"
+            ok = _plan_and_apply(goal[0], goal[1], reason)
+            if ok:
+                _last_replan_t[0] = now
+            elif blocked:
+                log.warning("blocked path + no replan — stopping; watchdog will recover")
+                controller.clear()
 
     # ── cmd_vel from watchdog backup → router bypass ───────────────────────────
     _backup_cmd: list = [None]
@@ -256,12 +304,16 @@ def main() -> None:
 
             # 2. LiDAR + mapping
             if t - t_last_lidar >= lidar_period:
-                pose = env.get_pose2d()
-                pts = lidar.scan()
-                mapper.update(pts, pose)
+                pose   = env.get_pose2d()
+                pts    = lidar.scan()
+                body_z = env.get_pose3d()[2]
+                mapper.update(pts, pose, robot_z=body_z)
                 grid = mapper.to_occupancy_grid()
                 _current_grid[0] = grid
                 publish_map(mapper, ns)
+                _maybe_replan()
+                if controller.goal_reached and _active_goal[0] is not None:
+                    _active_goal[0] = None
                 t_last_lidar = t
 
             # 3. CFPA2 timers (1 Hz, driven by TIMERS registry)

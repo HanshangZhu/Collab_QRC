@@ -63,13 +63,17 @@ class OccupancyMapper:
     # ── Update ───────────────────────────────────────────────────────────────
 
     def update(self, points_world: np.ndarray,
-               robot_pose: Tuple[float, float, float]) -> None:
+               robot_pose: Tuple[float, float, float],
+               robot_z: float = 0.0) -> None:
         """Update map from a 3D world-frame point cloud.
 
         robot_pose = (x, y, yaw).  Points are in absolute world frame.
+        robot_z    = body height in world frame (m). Critical for the height
+                     filter: without it, floor hits (world_z ≈ 0) pass the
+                     -0.05 m threshold and are mapped as occupied cells.
         """
         rx, ry, _ = robot_pose
-        rz = 0.0  # assume robot height ~ 0 for now
+        rz = robot_z
 
         if points_world.size == 0:
             return

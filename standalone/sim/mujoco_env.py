@@ -41,6 +41,12 @@ class MuJoCoEnv:
         self._base_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
 
+        # Cache foot body ids for actual wheel-axle position readout
+        self._foot_body_ids: list[int] = []
+        for fname in ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]:
+            bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, fname)
+            self._foot_body_ids.append(int(bid))
+
         # Cache wheel joint qvel addresses for freewheel readout
         self._wheel_joint_names = [
             "FL_foot_joint", "FR_foot_joint",
@@ -151,6 +157,17 @@ class MuJoCoEnv:
         return out
 
     # ── Helpers ──────────────────────────────────────────────────────────────
+
+    def get_foot_positions(self) -> np.ndarray:
+        """Return (4, 3) world-frame foot (wheel-axle) positions from data.xpos.
+
+        Uses actual MuJoCo body positions rather than analytical FK so that
+        any MJCF link-offset discrepancies are automatically accounted for.
+        """
+        out = np.zeros((4, 3), dtype=np.float64)
+        for i, bid in enumerate(self._foot_body_ids):
+            out[i] = self.data.xpos[bid]
+        return out
 
     @property
     def base_body_id(self) -> int:

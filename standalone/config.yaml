@@ -41,8 +41,10 @@ mapping:
   max_scan_height: 1.0   # only update map from points below this z (robot-frame)
 
 nav:
-  # A* planner
-  planner_inflation_cells: 3   # inflate obstacles by N cells before A*
+  # A* planner.
+  # 4 cells × 0.10 m/cell = 0.40 m inflation. Matches the original ROS2
+  # AsyncGridPlanner (inflation_m=0.38, src/go2w/go2w_nav/scripts/default_nav.py:71).
+  planner_inflation_cells: 4
   # Pure-pursuit controller
   lookahead_m: 0.8
   max_vx: 0.5            # m/s
@@ -86,3 +88,50 @@ watchdog:
   stuck_threshold_m: 0.20
   backup_distance_m: 0.40
   cooldown_sec: 8.0
+
+# ── CHAMP gait controller (used by main_champ.py only) ───────────────────────
+# Algorithm: body-frame foot targets computed fresh each tick from zero_stance.
+# Stance: backward sweep in body frame (no world-frame freeze, no IK drift).
+# Swing:  12-point Bezier arc matching CHAMP trajectory_planner.h.
+# Body height regulated passively via IK + ground contact (no PD gains needed).
+# See docs/claude/champ_standalone.md for full algorithm description.
+#
+# Params synced to original Go2W gait.yaml + joint PID from
+# go2w_mujoco_controllers.yaml. See docs/claude/champ_fixes_plan.md §B.
+champ:
+  # Gait timing — original CHAMP fixes swing_period=0.25 s and reads
+  # stance_duration from yaml (0.25 s). gait_period = stance + swing = 0.5 s,
+  # duty_factor = stance / gait_period = 0.5.
+  gait_period: 0.50
+  duty_factor: 0.50
+
+  # Swing trajectory — matches Go2W gait.yaml exactly.
+  swing_height: 0.04         # was 0.08; original 0.04
+  stance_depth: 0.01         # was 0.00; original 0.01 (cosine ground push)
+
+  # Target body CoM height — kept at 0.36 (the FK output of q_stand =
+  # [0, 0.9, -1.8] hardcoded in _ZERO_STANCE). Go2W gait.yaml original
+  # uses nominal_height: 0.28 but achieves it via different q_stand from
+  # IK in BodyController.poseCommand. Drop to 0.28 only after porting
+  # BodyController so q_stand is solved from height (see plan §B port-work).
+  body_height: 0.36
+
+  # Joint PD — matches go2w_mujoco_controllers.yaml joint_trajectory_controller
+  # gains: p=100, d=1.0 (uniform across all 12 leg joints). Integral term
+  # (i=0.2, i_clamp=2.5) skipped initially; add if drift seen.
+  kp_leg: 100.0
+  kd_leg: 1.0
+
+  # Wheel parameters
+  wheel_radius_m: 0.086
+  wheel_track_m: 0.40
+  wheel_max_omega: 8.5
+
+  # Wheel-mode auto-switch threshold (m/s). At or above this commanded vx,
+  # ChampController enters _wheel_drive_step() (legs PD-hold q_stand, wheels
+  # active drive) instead of _trot_step (freewheel). Matches the original
+  # ROS2 go2w_hybrid_cmd_router wheel_linear_threshold=0.18: cruise = wheels,
+  # trot = low-speed pivots / idle. Previously 1.0 (never triggered) which
+  # forced always-trot + freewheel slip (~88% at cruise). Router's
+  # wheel_mode flag also routes here from main_champ.py.
+  wheel_mode_speed: 0.18
