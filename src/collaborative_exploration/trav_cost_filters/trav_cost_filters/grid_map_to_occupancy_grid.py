@@ -27,9 +27,7 @@ from grid_map_msgs.msg import GridMap
 from nav_msgs.msg import OccupancyGrid
 
 from trav_cost_filters.occupancy_conversion import (
-    apply_rectangular_workspace_mask,
     apply_slope_verified_ramp_override,
-    project_rolling_grid_to_fixed_grid,
     stamp_free_disk,
     traversability_to_occupancy,
 )
@@ -78,67 +76,6 @@ class GridMapToOccupancyGrid(Node):
         self.ramp_max_step_residual_m = float(
             self.declare_parameter("ramp_max_step_residual_m", 0.06).value
         )
-        self.fixed_grid_enabled = bool(
-            self.declare_parameter("fixed_grid_enabled", False).value
-        )
-        self.fixed_origin_x = float(
-            self.declare_parameter("fixed_origin_x", 0.0).value
-        )
-        self.fixed_origin_y = float(
-            self.declare_parameter("fixed_origin_y", 0.0).value
-        )
-        self.fixed_width_cells = int(
-            self.declare_parameter("fixed_width_cells", 0).value
-        )
-        self.fixed_height_cells = int(
-            self.declare_parameter("fixed_height_cells", 0).value
-        )
-        self.unknown_clears_history = bool(
-            self.declare_parameter("unknown_clears_history", False).value
-        )
-        self.occupied_cost_threshold = int(
-            self.declare_parameter("occupied_cost_threshold", 80).value
-        )
-        self.free_cost_threshold = int(
-            self.declare_parameter("free_cost_threshold", 30).value
-        )
-        self.occupied_confirm_hits = int(
-            self.declare_parameter("occupied_confirm_hits", 2).value
-        )
-        self.occupied_clear_hits = int(
-            self.declare_parameter("occupied_clear_hits", 0).value
-        )
-        self.occupied_hit_increment = int(
-            self.declare_parameter("occupied_hit_increment", 1).value
-        )
-        self.free_hit_decrement = int(
-            self.declare_parameter("free_hit_decrement", 1).value
-        )
-        self.max_hit_count = int(
-            self.declare_parameter("max_hit_count", 8).value
-        )
-        self.workspace_mask_enabled = bool(
-            self.declare_parameter("workspace_mask_enabled", False).value
-        )
-        self.workspace_min_x = float(
-            self.declare_parameter("workspace_min_x", 0.0).value
-        )
-        self.workspace_max_x = float(
-            self.declare_parameter("workspace_max_x", 0.0).value
-        )
-        self.workspace_min_y = float(
-            self.declare_parameter("workspace_min_y", 0.0).value
-        )
-        self.workspace_max_y = float(
-            self.declare_parameter("workspace_max_y", 0.0).value
-        )
-        self.workspace_wall_thickness_m = float(
-            self.declare_parameter("workspace_wall_thickness_m", 0.0).value
-        )
-
-        self._fixed_cost: np.ndarray | None = None
-        self._fixed_hits: np.ndarray | None = None
-        self._fixed_resolution: float | None = None
 
         self.tf_buffer = Buffer() if self.seed_robot_footprint else None
         self.tf_listener = (
@@ -172,8 +109,7 @@ class GridMapToOccupancyGrid(Node):
             f"free>={self.free_threshold} lethal<{self.lethal_threshold} "
             f"seed_robot_footprint={self.seed_robot_footprint} "
             f"robot_frame={self.robot_frame} radius={self.robot_seed_radius_m:.2f}m "
-            f"ramp_override={self.ramp_override_enabled} "
-            f"fixed_grid={self.fixed_grid_enabled}"
+            f"ramp_override={self.ramp_override_enabled}"
         )
 
     def _layer_array(self, msg: GridMap, layer_name: str) -> np.ndarray | None:
@@ -248,91 +184,21 @@ class GridMapToOccupancyGrid(Node):
         occ.header.stamp = msg.header.stamp
         occ.header.frame_id = msg.header.frame_id
         occ.info.resolution = info.resolution
-
-        if self.fixed_grid_enabled:
-            cost = self._update_fixed_grid(cost, info)
-            occ.info.width = cost.shape[1]
-            occ.info.height = cost.shape[0]
-            occ.info.origin.position.x = self.fixed_origin_x
-            occ.info.origin.position.y = self.fixed_origin_y
-            occ.info.origin.position.z = 0.0
-            occ.info.origin.orientation.w = 1.0
-        else:
-            occ.info.width = n_cols
-            occ.info.height = n_rows
-            # grid_map origin is centre; OccupancyGrid origin is bottom-left corner.
-            occ.info.origin.position.x = (
-                info.pose.position.x - info.length_x / 2.0
-            )
-            occ.info.origin.position.y = (
-                info.pose.position.y - info.length_y / 2.0
-            )
-            occ.info.origin.position.z = info.pose.position.z
-            occ.info.origin.orientation = info.pose.orientation
-
+        occ.info.width = n_cols
+        occ.info.height = n_rows
+        # grid_map origin is centre; OccupancyGrid origin is bottom-left corner.
+        occ.info.origin.position.x = (
+            info.pose.position.x - info.length_x / 2.0
+        )
+        occ.info.origin.position.y = (
+            info.pose.position.y - info.length_y / 2.0
+        )
+        occ.info.origin.position.z = info.pose.position.z
+        occ.info.origin.orientation = info.pose.orientation
         self._seed_robot_footprint(cost, occ)
         occ.data = cost.flatten().tolist()
 
         self.pub.publish(occ)
-
-    def _update_fixed_grid(self, rolling_cost: np.ndarray, info) -> np.ndarray:
-        resolution = float(info.resolution)
-        width = self.fixed_width_cells if self.fixed_width_cells > 0 else rolling_cost.shape[1]
-        height = self.fixed_height_cells if self.fixed_height_cells > 0 else rolling_cost.shape[0]
-        shape = (int(height), int(width))
-
-        if (
-            self._fixed_cost is None
-            or self._fixed_hits is None
-            or self._fixed_cost.shape != shape
-            or self._fixed_resolution != resolution
-        ):
-            self._fixed_cost = np.full(shape, -1, dtype=np.int8)
-            self._fixed_hits = np.zeros(shape, dtype=np.int16)
-            self._fixed_resolution = resolution
-            self.get_logger().info(
-                f"fixed traversability grid initialized: "
-                f"{width}x{height} res={resolution:.3f} "
-                f"origin=({self.fixed_origin_x:.2f},{self.fixed_origin_y:.2f})"
-            )
-
-        rolling_origin_x = float(info.pose.position.x - info.length_x / 2.0)
-        rolling_origin_y = float(info.pose.position.y - info.length_y / 2.0)
-        changed = project_rolling_grid_to_fixed_grid(
-            rolling_cost,
-            self._fixed_cost,
-            self._fixed_hits,
-            rolling_origin_x=rolling_origin_x,
-            rolling_origin_y=rolling_origin_y,
-            fixed_origin_x=self.fixed_origin_x,
-            fixed_origin_y=self.fixed_origin_y,
-            resolution=resolution,
-            unknown_clears_history=self.unknown_clears_history,
-            occupied_cost_threshold=self.occupied_cost_threshold,
-            free_cost_threshold=self.free_cost_threshold,
-            occupied_confirm_hits=self.occupied_confirm_hits,
-            occupied_clear_hits=self.occupied_clear_hits,
-            occupied_hit_increment=self.occupied_hit_increment,
-            free_hit_decrement=self.free_hit_decrement,
-            max_hit_count=self.max_hit_count,
-        )
-        if changed > 0:
-            self.get_logger().debug(f"fixed traversability grid updated {changed} cells")
-
-        if self.workspace_mask_enabled:
-            apply_rectangular_workspace_mask(
-                self._fixed_cost,
-                origin_x=self.fixed_origin_x,
-                origin_y=self.fixed_origin_y,
-                resolution=resolution,
-                min_x=self.workspace_min_x,
-                max_x=self.workspace_max_x,
-                min_y=self.workspace_min_y,
-                max_y=self.workspace_max_y,
-                wall_thickness_m=self.workspace_wall_thickness_m,
-            )
-
-        return self._fixed_cost
 
     def _seed_robot_footprint(
         self,
