@@ -56,6 +56,28 @@ def test_3d_explore_ramp_goal_uses_monotonic_centerline_ascent():
     assert '"max_x": 11.2' in text
 
 
+def test_3d_explore_publishes_fixed_world_traversability_grid():
+    launch_path = (
+        GO2W_ROOT
+        / "go2_gazebo_sim"
+        / "launch"
+        / "nav_test_3d_explore.launch.py"
+    )
+    text = launch_path.read_text()
+    occ_block = text.split('name="grid_map_to_occupancy_grid"')[1].split(
+        "# 4. ramp_ascent_goal_node", 1
+    )[0]
+
+    assert '"fixed_grid_enabled": True' in occ_block
+    assert '"fixed_origin_x": -7.0' in occ_block
+    assert '"fixed_origin_y": -15.0' in occ_block
+    assert '"fixed_width_cells": 300' in occ_block
+    assert '"fixed_height_cells": 300' in occ_block
+    assert '"unknown_clears_history": False' in occ_block
+    assert '"occupied_confirm_hits": 2' in occ_block
+    assert '"workspace_mask_enabled": True' in occ_block
+
+
 def test_3d_explore_keeps_ramp_assist_active_until_platform_entry():
     launch_path = (
         GO2W_ROOT

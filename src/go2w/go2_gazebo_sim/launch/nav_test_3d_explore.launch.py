@@ -226,6 +226,31 @@ def generate_launch_description() -> LaunchDescription:
             "ramp_min_slope_rad": 0.13962634015954636,
             "ramp_max_slope_rad": 0.5235987755982988,
             "ramp_max_step_residual_m": 0.06,
+            # elevation_mapping_cupy is a robot-centered rolling map. Project
+            # each frame into a fixed world grid before Nav2/RViz consumes it;
+            # otherwise unknown holes and one-frame obstacle hits make the
+            # traversability display change shape continuously.
+            "fixed_grid_enabled": True,
+            "fixed_origin_x": -7.0,
+            "fixed_origin_y": -15.0,
+            "fixed_width_cells": 300,
+            "fixed_height_cells": 300,
+            "unknown_clears_history": False,
+            "occupied_cost_threshold": 80,
+            "free_cost_threshold": 30,
+            "occupied_confirm_hits": 2,
+            "occupied_clear_hits": 0,
+            "max_hit_count": 8,
+            # Deterministic room bounds for demo_ramp: x∈[-0.2,16.2],
+            # y∈[-8.2,8.2]. This keeps the four outer walls stable and leaves
+            # outside-room cells unknown instead of letting rolling-map holes
+            # carve the rectangular world into changing blobs.
+            "workspace_mask_enabled": True,
+            "workspace_min_x": -0.2,
+            "workspace_max_x": 16.2,
+            "workspace_min_y": -8.2,
+            "workspace_max_y": 8.2,
+            "workspace_wall_thickness_m": 0.30,
         }],
         remappings=[
             ("/tf",        ["/", LaunchConfiguration("robot_namespace"), "/tf"]),
