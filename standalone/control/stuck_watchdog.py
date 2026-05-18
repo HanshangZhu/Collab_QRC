@@ -51,12 +51,14 @@ class StuckWatchdog:
 
         odom_topic = f"/{namespace}/odom/nav"
         goal_topic = f"/{namespace}/goal_pose"
+        nav_status_topic = f"/{namespace}/nav_status"
         self._cmd_vel_topic = f"/{namespace}/cmd_vel"
         self._recovery_topic = f"/{namespace}/recovery_event"
         self._goal_topic = goal_topic
 
         BUS.subscribe(odom_topic, self._on_odom)
         BUS.subscribe(goal_topic, self._on_goal)
+        BUS.subscribe(nav_status_topic, self._on_nav_status)
 
     def _on_odom(self, msg) -> None:
         t = time.monotonic()
@@ -75,6 +77,38 @@ class StuckWatchdog:
             if math.hypot(dx, dy) > self._goal_change_thr:
                 self._pose_hist.clear()
         self._latest_goal = msg
+
+    def _on_nav_status(self, msg) -> None:
+        """When the runtime declares the current goal unreachable, FORCE a
+        backup recovery immediately (robot is probably wedged) and drop the
+        cached goal so the post-backup republish doesn't fire on the
+        known-bad target. The next planner cycle (VLM/CFPA2) will pick a
+        fresh goal from the new pose after the robot has reversed clear."""
+        try:
+            import json
+            payload = json.loads(getattr(msg, "data", "") or "{}")
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+        if str(payload.get("state", "")) not in ("unreachable", "failed"):
+            return
+        # Drop the failed goal so post-backup republish (which uses
+        # self._latest_goal) is a no-op — see tick() backup-done branch.
+        self._latest_goal = None
+        # Force backup recovery NOW so the robot escapes the wedged pose.
+        # Respects cooldown to avoid recovery thrash if VLM keeps picking
+        # adjacent unreachable goals in quick succession.
+        t = time.monotonic()
+        if t - self._last_recovery < self._cooldown:
+            return
+        if self._recovery_in_flight:
+            return
+        self._emit_recovery("stuck_detected")
+        self._last_recovery = t
+        self._recovery_in_flight = True
+        self._backup_start = t
+        self._emit_recovery("backup_started")
 
     # ── Called from main loop ─────────────────────────────────────────────────
 

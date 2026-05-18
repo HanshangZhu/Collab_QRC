@@ -3,3 +3,10 @@ numpy>=1.24
 scipy>=1.11
 pyyaml>=6.0
 matplotlib>=3.7
+# LangGraph agent stack (already installed in Python 3.13 / mjpython env)
+langgraph>=1.0.0
+langchain-core>=1.0.0
+langchain-openai>=1.0.0
+# Note: langchain-google-genai NOT required — Google AI Studio is accessed via
+# the OpenAI-compat endpoint (generativelanguage.googleapis.com/v1beta/openai/)
+# using ChatOpenAI from langchain-openai with GEMINI_API_KEY.

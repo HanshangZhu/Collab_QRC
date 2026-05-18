@@ -16,17 +16,25 @@ Pose2D = Tuple[float, float, float]  # (x, y, yaw)
 
 
 class PurePursuitController:
-    """Pure-pursuit with heading correction for SE2 diff-drive / wheel mode."""
+    """Pure-pursuit with heading correction for SE2 diff-drive / wheel mode.
+
+    Pivot-first policy: when the heading error to the lookahead target exceeds
+    `pivot_threshold_deg` (default 90°), the robot stops and rotates in place
+    before moving forward. This prevents the Go2W from attempting high-speed
+    U-turns that can tip the top-heavy body, especially near walls.
+    """
 
     def __init__(
         self,
         *,
         lookahead_m: float = 0.8,
         max_vx: float = 0.5,
-        max_wz: float = 1.2,
+        max_wz: float = 0.7,
         goal_tolerance_m: float = 0.35,
         heading_gain: float = 2.0,
-        min_vx_while_turning: float = 0.05,
+        min_vx_while_turning: float = 0.08,
+        pivot_threshold_deg: float = 90.0,
+        pivot_exit_deg: float = 30.0,
     ) -> None:
         self._lookahead = lookahead_m
         self._max_vx = max_vx
@@ -34,6 +42,9 @@ class PurePursuitController:
         self._goal_tol = goal_tolerance_m
         self._k_heading = heading_gain
         self._min_vx = min_vx_while_turning
+        self._pivot_thr = math.radians(pivot_threshold_deg)
+        self._pivot_exit = math.radians(pivot_exit_deg)
+        self._pivoting: bool = False   # state: True = rotate-only phase
 
         self._path: Path = []
         self._target_idx: int = 0
@@ -46,14 +57,17 @@ class PurePursuitController:
         if not path:
             self._path = []
             self._goal_reached = True
+            self._pivoting = False
             return
         self._path = path
         self._target_idx = 0
         self._goal_reached = False
+        self._pivoting = False
 
     def clear(self) -> None:
         self._path = []
         self._goal_reached = True
+        self._pivoting = False
 
     @property
     def goal_reached(self) -> bool:
@@ -95,10 +109,26 @@ class PurePursuitController:
         desired_yaw = math.atan2(ty - ry, tx - rx)
         heading_err = _angle_diff(desired_yaw, ryaw)
 
-        # Angular velocity proportional to heading error
+        # ── Pivot-first policy ────────────────────────────────────────────
+        # Enter pivot mode when heading error is large (> pivot_threshold).
+        # Exit pivot mode only after error drops below pivot_exit (hysteresis).
+        # During pivot: rotate at reduced speed, zero forward velocity.
+        # This prevents the Go2W tipping over during fast U-turns near walls.
+        if abs(heading_err) >= self._pivot_thr:
+            self._pivoting = True
+        elif self._pivoting and abs(heading_err) < self._pivot_exit:
+            self._pivoting = False
+
+        if self._pivoting:
+            wz_pivot = 0.5  # rad/s — gentle enough to stay stable
+            wz = float(_clamp(self._k_heading * heading_err,
+                               -wz_pivot, wz_pivot))
+            return 0.0, wz
+
+        # ── Normal pure-pursuit ───────────────────────────────────────────
         wz = float(_clamp(self._k_heading * heading_err, -self._max_wz, self._max_wz))
 
-        # Forward velocity: reduce when turning hard
+        # Forward velocity: reduce smoothly as angular demand rises
         turn_ratio = abs(wz) / self._max_wz  # 0..1
         vx = self._max_vx * max(1.0 - turn_ratio, self._min_vx / self._max_vx)
         vx = float(_clamp(vx, 0.0, self._max_vx))

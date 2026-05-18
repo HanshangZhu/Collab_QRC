@@ -4,7 +4,7 @@
 
 sim:
   # MJCF scene to load (relative to repo root)
-  scene: src/go2w/go2_gazebo_sim/mujoco/demo1.xml
+  scene: src/go2w/go2_gazebo_sim/mujoco/demo3.xml
   # Physics timestep (must match MJCF <option timestep>)
   timestep: 0.002
   # Render at this Hz (0 = headless, no viewer)
@@ -30,8 +30,14 @@ lidar:
 
 mapping:
   resolution: 0.10       # m/cell
-  width_m: 20.0          # map extent (centred on robot start)
-  height_m: 20.0
+  width_m: 28.0          # demo3 is x∈[0,24] → 28m covers full scene + 2m margin
+  height_m: 20.0         # demo3 is y∈[-8,8] → 20m covers full scene + 2m margin
+  # Map center — passed as origin_x/y to OccupancyMapper which treats them as
+  # the grid centre (see occupancy_grid.py line 46-47). Set to scene geometric
+  # centre so the full scene is visible from spawn. For demo3: (12, 0).
+  # For demo1 leave at null → falls back to robot spawn (acceptable for small scene).
+  map_center_x: 12.0
+  map_center_y: 0.0
   hit_log_odds: 0.9
   miss_log_odds: -0.4
   clip_min: -5.0
@@ -44,11 +50,12 @@ nav:
   # A* planner.
   # 4 cells × 0.10 m/cell = 0.40 m inflation. Matches the original ROS2
   # AsyncGridPlanner (inflation_m=0.38, src/go2w/go2w_nav/scripts/default_nav.py:71).
-  planner_inflation_cells: 4
-  # Pure-pursuit controller
+  planner_inflation_cells: 2   # 2×0.1m=0.2m — minimum safe for Go2W body ~0.2m.
+                               # 3 (0.3m) still blocked junction corners in demo3.
+  # Pure-pursuit controller (pivot-first policy active — see controller.py)
   lookahead_m: 0.8
-  max_vx: 0.5            # m/s
-  max_wz: 1.2            # rad/s
+  max_vx: 0.5            # m/s — cruise speed
+  max_wz: 0.7            # rad/s — reduced from 1.2; prevents topple on fast U-turns
   goal_tolerance_m: 0.35
   heading_gain: 2.0
 

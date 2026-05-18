@@ -187,13 +187,15 @@ def main() -> None:
 
     env.forward()
     start_x, start_y, _ = env.get_pose2d()
+    map_cx = map_cfg.get("map_center_x", start_x)
+    map_cy = map_cfg.get("map_center_y", start_y)
 
     mapper = OccupancyMapper(
         resolution=map_cfg["resolution"],
         width_m=map_cfg["width_m"],
         height_m=map_cfg["height_m"],
-        origin_x=start_x,
-        origin_y=start_y,
+        origin_x=map_cx,
+        origin_y=map_cy,
         hit_log_odds=map_cfg["hit_log_odds"],
         miss_log_odds=map_cfg["miss_log_odds"],
         clip_min=map_cfg["clip_min"],
@@ -252,7 +254,9 @@ def main() -> None:
         backup_distance_m=wd_cfg["backup_distance_m"],
         cooldown_sec=wd_cfg["cooldown_sec"],
     )
-    metrics = ExplorationMetricsLogger(ns)
+    # 90s stagnation window — gives CFPA2 time to navigate the central junction
+    # between quadrants in demo3. Default 30s fires too early on large scenes.
+    metrics = ExplorationMetricsLogger(ns, coverage_stagnant_window_sec=90.0)
 
     cfpa2 = CFPA2SingleRobotNode()
     cfpa2.set_parameter("namespaces", [ns])
@@ -537,6 +541,30 @@ def main() -> None:
                 run_loop(viewer=viewer)
             except KeyboardInterrupt:
                 log.info("[CHAMP] Interrupted — exiting.")
+
+    # ── Comparison report ────────────────────────────────────────────────────
+    import json as _json
+    import time as _time
+    t_end = env.time
+    known_cells = int(np.sum(mapper._observed))
+    known_m2 = round(known_cells * (mapper.resolution ** 2), 2)
+    free_cells = int(np.sum(mapper._observed & (mapper._log_odds <= mapper._free_thr)))
+    occ_cells  = int(np.sum(mapper._observed & (mapper._log_odds >= mapper._occ_thr)))
+    free_m2 = round(free_cells * (mapper.resolution ** 2), 2)
+    report = {
+        "run": "cfpa2",
+        "scene": str(scene_path.name),
+        "sim_time_sec": round(t_end, 1),
+        "known_m2": known_m2,
+        "free_m2": free_m2,
+        "wall_m2": round(occ_cells * (mapper.resolution ** 2), 2),
+        "goals_published": _goal_seq[0],
+    }
+    report_path = Path("/tmp") / f"cfpa2_report_{_time.strftime('%Y%m%d_%H%M%S')}.json"
+    report_path.write_text(_json.dumps(report, indent=2))
+    log.info(f"[CHAMP] Report saved → {report_path}")
+    log.info(f"[CHAMP] known={known_m2}m²  free={free_m2}m²"
+             f"  goals={report['goals_published']}  sim_time={report['sim_time_sec']}s")
 
 
 if __name__ == "__main__":

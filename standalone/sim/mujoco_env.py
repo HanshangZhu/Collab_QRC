@@ -169,6 +169,30 @@ class MuJoCoEnv:
             out[i] = self.data.xpos[bid]
         return out
 
+    def render_camera(
+        self,
+        camera_name: str = "front_camera",
+        width: int = 640,
+        height: int = 480,
+    ) -> "np.ndarray | None":
+        """Render an offscreen RGB frame from a named camera.
+
+        Returns (H, W, 3) uint8 numpy array, or None if rendering fails
+        (e.g. camera name not found, GL context unavailable on this platform).
+
+        Uses mujoco.Renderer (EGL / software offscreen — no display required).
+        Safe to call from the main thread; do NOT call from background threads
+        because mujoco.Renderer creates/destroys an OpenGL context per call.
+        """
+        try:
+            renderer = mujoco.Renderer(self.model, height=height, width=width)
+            renderer.update_scene(self.data, camera=camera_name)
+            rgb = renderer.render()
+            renderer.close()
+            return rgb
+        except Exception:
+            return None
+
     @property
     def base_body_id(self) -> int:
         return self._base_body_id
