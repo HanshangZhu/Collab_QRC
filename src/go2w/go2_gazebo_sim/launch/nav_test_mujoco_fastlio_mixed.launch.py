@@ -2244,30 +2244,14 @@ def _launch_setup(context):
                                 "use_sim_time": use_sim_time,
                                 "namespaces": ["robot_a", "robot_b"],
                                 "goal_topic_suffix": "/way_point_coord",
+                                "planning_map_topic_suffix": "/map",
                                 "marker_frame_override": "map",
                                 # ── Shared-map frontier extraction ──
-                                # Without this, CFPA2 extracts frontiers
-                                # from EACH robot's /{ns}/map independently
-                                # and dedupes targets only by spatial
-                                # nearness. A cell that's "free with
-                                # unknown neighbour" in B's small local
-                                # map can be FREE-ALL-AROUND in A's
-                                # already-explored region — but B's-side
-                                # extraction marks it a frontier and
-                                # _merge_targets keeps it. Result: B
-                                # gets dispatched to a "frontier" that's
-                                # actually known free space from A's
-                                # perspective, wasting time + LiDAR.
-                                #
-                                # multirobot_map_merge publishes the union
-                                # at /merged_map. Pointing CFPA2 at it
-                                # makes "frontier" mean "boundary between
-                                # the swarm's combined known region and
-                                # genuinely-unknown space" — the correct
-                                # definition. CFPA2 fails-open to per-ns
-                                # for the first ~30 s while map_merge
-                                # bootstraps GT init poses, then auto-
-                                # switches once the merged map arrives.
+                                # C++ CFPA2 consumes planning_map_topic_suffix,
+                                # so use /<ns>/map. map_augmenter publishes
+                                # that topic from each local map plus /merged_map,
+                                # giving CFPA2 shared swarm coverage without
+                                # waiting on Nav2 global_costmap publications.
                                 "use_shared_map": True,
                                 "shared_map_topic": "/merged_map",
                                 "shared_map_wait_sec": 35.0,

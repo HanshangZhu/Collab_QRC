@@ -265,6 +265,11 @@ class BaselineWrapperTests(unittest.TestCase):
         self.assertIn("gbplanner_service_path_executor.py", text)
         self.assertIn("service_path", text)
 
+    def test_cfpa2_benchmark_launch_uses_live_robot_maps(self) -> None:
+        launch = ROOT / "src" / "go2w" / "go2_gazebo_sim" / "launch" / "nav_test_mujoco_fastlio_mixed.launch.py"
+        text = launch.read_text()
+        self.assertIn('"planning_map_topic_suffix": "/map"', text)
+
 
 if __name__ == "__main__":
     unittest.main()
