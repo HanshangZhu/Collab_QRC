@@ -43,6 +43,7 @@ GBPLANNER2_EXTERNAL_CMD="${GBPLANNER2_EXTERNAL_CMD:-}"
 MTARE_EXTERNAL_CMD="${MTARE_EXTERNAL_CMD:-}"
 MTARE_WAYPOINT_TOPIC_A="${MTARE_WAYPOINT_TOPIC_A:-/robot_a/mtare/way_point}"
 MTARE_WAYPOINT_TOPIC_B="${MTARE_WAYPOINT_TOPIC_B:-/robot_b/mtare/way_point}"
+ALLOW_MTARE_FALLBACK="${ALLOW_MTARE_FALLBACK:-false}"
 
 # ── Trav-CNN corpus collection ─────────────────────────────────────────────────
 COLLECT_TRAV_CORPUS="${COLLECT_TRAV_CORPUS:-false}"
@@ -57,8 +58,23 @@ GBPLANNER_COMPOSE_FILE="${GBPLANNER_COMPOSE_FILE:-${WS_DIR}/scripts/sim/gbplanne
 ROS2_SETUP_BASH="${ROS2_SETUP_BASH:-/opt/ros/humble/setup.bash}"
 MJK_DIR="${WS_DIR}/src/go2w/go2_gazebo_sim/mujoco"
 GENERATED_DIR="${MJK_DIR}/generated"
+MTARE_VENDOR_EXECUTABLE_CANDIDATES=(
+  "${WS_DIR}/src/vendor/tare_planner/install/tare_planner/lib/tare_planner/tare_planner_node"
+  "${WS_DIR}/src/vendor/tare_planner/install/lib/tare_planner/tare_planner_node"
+)
 
 safe_source() { set +u; source "$1"; set -u; }
+
+find_mtare_vendor_executable() {
+  local candidate
+  for candidate in "${MTARE_VENDOR_EXECUTABLE_CANDIDATES[@]}"; do
+    if [[ -x "${candidate}" && -f "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
 
 if [[ -f "${HOME}/miniforge3/etc/profile.d/conda.sh" ]]; then
   safe_source "${HOME}/miniforge3/etc/profile.d/conda.sh"
@@ -91,6 +107,18 @@ for planner in ${PLANNERS}; do
       ;;
   esac
 done
+
+MTARE_VENDOR_EXECUTABLE=""
+if [[ " ${PLANNERS} " == *" mtare "* && -z "${MTARE_EXTERNAL_CMD}" ]]; then
+  MTARE_VENDOR_EXECUTABLE="$(find_mtare_vendor_executable || true)"
+  if [[ -z "${MTARE_VENDOR_EXECUTABLE}" && "${ALLOW_MTARE_FALLBACK}" != "true" ]]; then
+    echo "ERROR: mtare benchmark requires a built vendor TARE executable." >&2
+    echo "       Expected one of:" >&2
+    printf '       - %s\n' "${MTARE_VENDOR_EXECUTABLE_CANDIDATES[@]}" >&2
+    echo "       Build src/vendor/tare_planner, or set ALLOW_MTARE_FALLBACK=true for non-formal fallback debug." >&2
+    exit 2
+  fi
+fi
 
 mkdir -p "${OUT_DIR}" "${GENERATED_DIR}"
 : "${TRAV_WEIGHTS_OUT:=${OUT_DIR}/weights_bench_retrain.dat}"
@@ -177,6 +205,8 @@ cat >"${OUT_DIR}/benchmark_config.json" <<EOF
   "extra_args": "${EXTRA_ARGS}",
   "gbplanner2_external_cmd": "$(printf '%s' "${GBPLANNER2_EXTERNAL_CMD}")",
   "mtare_external_cmd": "$(printf '%s' "${MTARE_EXTERNAL_CMD}")",
+  "allow_mtare_fallback": "${ALLOW_MTARE_FALLBACK}",
+  "mtare_vendor_executable": "$(printf '%s' "${MTARE_VENDOR_EXECUTABLE}")",
   "collect_trav_corpus": "${COLLECT_TRAV_CORPUS}",
   "trav_retrain": "${TRAV_RETRAIN}",
   "trav_weights_out": "$(printf '%s' "${TRAV_WEIGHTS_OUT}")",
@@ -202,12 +232,18 @@ fi
 echo "  scenes       : ${#SCENES[@]}"
 echo "================================================================"
 
+validation_failed=0
+
 if [[ " ${PLANNERS} " == *" gbplanner2 "* && -z "${GBPLANNER2_EXTERNAL_CMD}" ]]; then
   echo "  gbplanner2  : using built-in dual UAS/Docker wrapper"
 fi
 
 if [[ " ${PLANNERS} " == *" mtare "* && -z "${MTARE_EXTERNAL_CMD}" ]]; then
-  echo "  mtare       : using vendor TARE/MTARE if built, otherwise local autonomous fallback"
+  if [[ -n "${MTARE_VENDOR_EXECUTABLE}" ]]; then
+    echo "  mtare       : using vendor TARE/MTARE (${MTARE_VENDOR_EXECUTABLE})"
+  else
+    echo "  mtare       : ALLOW_MTARE_FALLBACK=true, using local autonomous fallback"
+  fi
 fi
 
 if [[ "${COLLECT_TRAV_CORPUS}" == "true" ]]; then
@@ -333,6 +369,16 @@ EOF
         echo "  WARN: session JSON missing; tail of log:"
         tail -20 "${trial_log}" | sed 's/^/    /'
       fi
+      if python3 "${WS_DIR}/scripts/bench/validate_exploration_trial.py" \
+        "${trial_dir}" \
+        --duration-sec "${DURATION_SEC}" \
+        >"${trial_dir}/validation.log" 2>&1; then
+        echo "  validation: ok"
+      else
+        validation_failed=1
+        echo "  validation: FAILED; details:"
+        sed 's/^/    /' "${trial_dir}/validation.log"
+      fi
     done
   done
 done
@@ -367,3 +413,8 @@ fi
 
 python3 "${WS_DIR}/scripts/bench/aggregate_exploration_benchmark.py" "${OUT_DIR}" || true
 echo "Benchmark output: ${OUT_DIR}"
+
+if [[ "${validation_failed}" -ne 0 ]]; then
+  echo "ERROR: one or more benchmark trials failed validation" >&2
+  exit 3
+fi

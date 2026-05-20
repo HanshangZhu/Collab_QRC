@@ -208,6 +208,75 @@ class BenchmarkAggregationTests(unittest.TestCase):
             self.assertIsNone(summary[key]["at_480s_robot_a_distance_m_mean"])
 
 
+class BenchmarkValidationTests(unittest.TestCase):
+    def _write_valid_trial(self, trial_dir: Path) -> None:
+        trial_dir.mkdir(parents=True)
+        (trial_dir / "exit_code.txt").write_text("0\n")
+        for ns, distance in (("robot_a", 12.0), ("robot_b", 10.0)):
+            (trial_dir / f"{ns}.json").write_text(json.dumps({
+                "outcome": "completed",
+                "progress": {"distance_travelled_m": distance},
+                "coverage": {"explored_area_m2": 100.0},
+            }))
+        with (trial_dir / "exploration_test.csv").open("w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "t_sim",
+                    "global_explored_area_m2",
+                    "global_coverage_ratio",
+                    "robot_a_trajectory_m",
+                    "robot_a_coverage_area_m2",
+                    "robot_b_trajectory_m",
+                    "robot_b_coverage_area_m2",
+                ],
+            )
+            writer.writeheader()
+            writer.writerow({
+                "t_sim": "10.0",
+                "global_explored_area_m2": "50.0",
+                "global_coverage_ratio": "0.13",
+                "robot_a_trajectory_m": "1.0",
+                "robot_a_coverage_area_m2": "45.0",
+                "robot_b_trajectory_m": "1.0",
+                "robot_b_coverage_area_m2": "42.0",
+            })
+            writer.writerow({
+                "t_sim": "130.0",
+                "global_explored_area_m2": "120.0",
+                "global_coverage_ratio": "0.31",
+                "robot_a_trajectory_m": "12.0",
+                "robot_a_coverage_area_m2": "100.0",
+                "robot_b_trajectory_m": "10.0",
+                "robot_b_coverage_area_m2": "92.0",
+            })
+        (trial_dir / "exploration_events_test.log").write_text(
+            "[00:00:01.000 +----ms] PLAN_RETURNED: ns=robot_a planner=ComputePathToPose t=20ms ok\n"
+        )
+
+    def test_trial_validation_accepts_required_benchmark_outputs(self) -> None:
+        from validate_exploration_trial import validate_trial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "trial_01"
+            self._write_valid_trial(trial_dir)
+            result = validate_trial(trial_dir, duration_sec=150.0)
+            self.assertTrue(result["valid"], result)
+            self.assertTrue((trial_dir / "validation.json").exists())
+
+    def test_trial_validation_rejects_missing_checkpoint_sample(self) -> None:
+        from validate_exploration_trial import validate_trial
+
+        with tempfile.TemporaryDirectory() as tmp:
+            trial_dir = Path(tmp) / "trial_01"
+            self._write_valid_trial(trial_dir)
+            text = (trial_dir / "exploration_test.csv").read_text()
+            (trial_dir / "exploration_test.csv").write_text(text.replace("130.0", "50.0"))
+            result = validate_trial(trial_dir, duration_sec=150.0)
+            self.assertFalse(result["valid"])
+            self.assertIn("120s checkpoint", "\n".join(result["errors"]))
+
+
 class MTARECommonExecutorTests(unittest.TestCase):
     def test_assigns_distinct_frontiers_from_map_and_robot_positions(self) -> None:
         from mtare_common_executor_core import assign_frontiers, extract_frontier_clusters
@@ -252,6 +321,15 @@ class BaselineWrapperTests(unittest.TestCase):
         self.assertIn("Allowed: cfpa2 gbplanner2 mtare", text)
         self.assertIn("gbplanner3 is intentionally excluded", text)
 
+    def test_benchmark_runner_requires_vendor_mtare_for_formal_runs(self) -> None:
+        runner = ROOT / "scripts" / "bench" / "benchmark_exploration_planners.sh"
+        text = runner.read_text()
+        self.assertIn('ALLOW_MTARE_FALLBACK="${ALLOW_MTARE_FALLBACK:-false}"', text)
+        self.assertIn("find_mtare_vendor_executable", text)
+        self.assertIn("mtare benchmark requires a built vendor TARE executable", text)
+        self.assertIn("ALLOW_MTARE_FALLBACK=true for non-formal fallback debug", text)
+        self.assertIn('"mtare_vendor_executable"', text)
+
     def test_gbplanner_dual_wrapper_declares_required_topics(self) -> None:
         wrapper = ROOT / "scripts" / "sim" / "gbplanner3_mujoco" / "launch_dual_common_executor.sh"
         compose = ROOT / "scripts" / "sim" / "gbplanner3_mujoco" / "compose" / "docker-compose.collab_qrc_dual.yml"
@@ -269,6 +347,48 @@ class BaselineWrapperTests(unittest.TestCase):
         launch = ROOT / "src" / "go2w" / "go2_gazebo_sim" / "launch" / "nav_test_mujoco_fastlio_mixed.launch.py"
         text = launch.read_text()
         self.assertIn('"planning_map_topic_suffix": "/map"', text)
+
+    def test_cfpa2_declares_planner_mode_before_runtime_use(self) -> None:
+        coordinator = (
+            ROOT
+            / "src"
+            / "collaborative_exploration"
+            / "cfpa2_collaborative_autonomy"
+            / "cfpa2_collaborative_autonomy"
+            / "cfpa2_coordinator_node.py"
+        )
+        config = (
+            ROOT
+            / "src"
+            / "collaborative_exploration"
+            / "cfpa2_collaborative_autonomy"
+            / "config"
+            / "cfpa2_coordinator.yaml"
+        )
+        text = coordinator.read_text()
+        declare_idx = text.index('declare_parameter("cfpa2_planner_mode", "greedy")')
+        assign_idx = text.index("self.cfpa2_planner_mode = _planner_mode")
+        use_idx = text.index('if self.cfpa2_planner_mode == "tsp_topk"')
+        self.assertLess(declare_idx, assign_idx)
+        self.assertLess(assign_idx, use_idx)
+        self.assertIn('not in ("greedy", "tsp_topk")', text)
+        self.assertIn("cfpa2_planner_mode: greedy", config.read_text())
+
+    def test_mixed_benchmark_launch_uses_available_cpu_mppi_plugin(self) -> None:
+        launch = ROOT / "src" / "go2w" / "go2_gazebo_sim" / "launch" / "nav_test_mujoco_fastlio_mixed.launch.py"
+        overlay = ROOT / "src" / "go2w" / "go2w_config" / "config" / "nav" / "nav2_cpu_mppi_overlay_sim.yaml"
+        self.assertTrue(overlay.exists())
+        self.assertIn("nav2_cpu_mppi_overlay_sim.yaml", launch.read_text())
+        self.assertIn('plugin: "nav2_mppi_controller::MPPIController"', overlay.read_text())
+        self.assertIn("use_cuda: false", overlay.read_text())
+
+    def test_mtare_vendor_launch_requires_real_executable(self) -> None:
+        launch = ROOT / "src" / "go2w" / "go2_gazebo_sim" / "launch" / "nav_test_mujoco_fastlio_mixed.launch.py"
+        text = launch.read_text()
+        self.assertIn("mtare_executable_candidates", text)
+        self.assertIn("os.path.isfile(path) and os.access(path, os.X_OK)", text)
+        self.assertIn("exec {shlex.quote(mtare_executable)}", text)
+        self.assertIn("Vendor TARE executable was not found", text)
 
 
 if __name__ == "__main__":
