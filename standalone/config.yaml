@@ -1,0 +1,144 @@
+# Standalone MuJoCo exploration stack — runtime config.
+# Edit before running main.py; all paths are relative to the repo root
+# unless absolute.
+
+sim:
+  # MJCF scene to load (relative to repo root)
+  scene: src/go2w/go2_gazebo_sim/mujoco/demo3.xml
+  # Physics timestep (must match MJCF <option timestep>)
+  timestep: 0.002
+  # Render at this Hz (0 = headless, no viewer)
+  render_hz: 60
+  # Robot body name in the MJCF
+  robot_body: base_link
+  # Site used for GT pose read-out
+  robot_site: base_link_site
+  # LiDAR site name
+  lidar_site: livox_mid360
+  # Body to exclude from ray-casting (robot self)
+  lidar_exclude_body: base_link
+
+lidar:
+  hz_samples: 360        # horizontal rays (full 360 deg)
+  vt_samples: 8          # vertical lines
+  h_fov_deg: 360.0
+  v_min_deg: -7.0
+  v_max_deg: 52.0
+  range_min: 0.05
+  range_max: 8.0
+  publish_rate_hz: 5.0   # how often to raycast (sim-time Hz)
+
+mapping:
+  resolution: 0.10       # m/cell
+  width_m: 28.0          # demo3 is x∈[0,24] → 28m covers full scene + 2m margin
+  height_m: 20.0         # demo3 is y∈[-8,8] → 20m covers full scene + 2m margin
+  # Map center — passed as origin_x/y to OccupancyMapper which treats them as
+  # the grid centre (see occupancy_grid.py line 46-47). Set to scene geometric
+  # centre so the full scene is visible from spawn. For demo3: (12, 0).
+  # For demo1 leave at null → falls back to robot spawn (acceptable for small scene).
+  map_center_x: 12.0
+  map_center_y: 0.0
+  hit_log_odds: 0.9
+  miss_log_odds: -0.4
+  clip_min: -5.0
+  clip_max: 5.0
+  occ_threshold: 0.5     # log-odds threshold for occupied
+  free_threshold: -0.5   # log-odds threshold for free
+  max_scan_height: 1.0   # only update map from points below this z (robot-frame)
+
+nav:
+  # A* planner.
+  # 4 cells × 0.10 m/cell = 0.40 m inflation. Matches the original ROS2
+  # AsyncGridPlanner (inflation_m=0.38, src/go2w/go2w_nav/scripts/default_nav.py:71).
+  planner_inflation_cells: 2   # 2×0.1m=0.2m — minimum safe for Go2W body ~0.2m.
+                               # 3 (0.3m) still blocked junction corners in demo3.
+  # Pure-pursuit controller (pivot-first policy active — see controller.py)
+  lookahead_m: 0.8
+  max_vx: 0.5            # m/s — cruise speed
+  max_wz: 0.7            # rad/s — reduced from 1.2; prevents topple on fast U-turns
+  goal_tolerance_m: 0.35
+  heading_gain: 2.0
+
+robot:
+  # Leg standing pose (radians) — [abduction, thigh, calf] per leg
+  stand_abduction: 0.0
+  stand_thigh: 0.9
+  stand_calf: -1.8
+  # PD gains for leg position control
+  kp_ab: 40.0
+  kp_thigh: 40.0
+  kp_calf: 50.0
+  kd: 2.0
+  # Wheel params (from MJCF)
+  wheel_radius_m: 0.086
+  wheel_track_m: 0.40
+  wheel_max_omega: 8.5   # rad/s
+
+cfpa2:
+  namespace: robot
+  publish_rate: 1.0      # Hz — how often CFPA2 ticks
+  sensor_range: 3.5
+  frontier_stride: 2
+  max_targets: 400
+  goal_lock_sec: 5.0
+  switch_min_dist: 0.35
+  reached_blacklist_dist: 0.35
+  cfpa2_w_ig: 1.0
+  cfpa2_w_c: 0.6
+  cfpa2_w_sw: 0.2
+  cfpa2_w_momentum: 2.0
+  cfpa2_min_utility: -0.5
+  verbose_logs: false
+
+watchdog:
+  stuck_window_sec: 10.0
+  stuck_threshold_m: 0.20
+  backup_distance_m: 0.40
+  cooldown_sec: 8.0
+
+# ── CHAMP gait controller (used by main_champ.py only) ───────────────────────
+# Algorithm: body-frame foot targets computed fresh each tick from zero_stance.
+# Stance: backward sweep in body frame (no world-frame freeze, no IK drift).
+# Swing:  12-point Bezier arc matching CHAMP trajectory_planner.h.
+# Body height regulated passively via IK + ground contact (no PD gains needed).
+# See docs/claude/champ_standalone.md for full algorithm description.
+#
+# Params synced to original Go2W gait.yaml + joint PID from
+# go2w_mujoco_controllers.yaml. See docs/claude/champ_fixes_plan.md §B.
+champ:
+  # Gait timing — original CHAMP fixes swing_period=0.25 s and reads
+  # stance_duration from yaml (0.25 s). gait_period = stance + swing = 0.5 s,
+  # duty_factor = stance / gait_period = 0.5.
+  gait_period: 0.50
+  duty_factor: 0.50
+
+  # Swing trajectory — matches Go2W gait.yaml exactly.
+  swing_height: 0.04         # was 0.08; original 0.04
+  stance_depth: 0.01         # was 0.00; original 0.01 (cosine ground push)
+
+  # Target body CoM height — kept at 0.36 (the FK output of q_stand =
+  # [0, 0.9, -1.8] hardcoded in _ZERO_STANCE). Go2W gait.yaml original
+  # uses nominal_height: 0.28 but achieves it via different q_stand from
+  # IK in BodyController.poseCommand. Drop to 0.28 only after porting
+  # BodyController so q_stand is solved from height (see plan §B port-work).
+  body_height: 0.36
+
+  # Joint PD — matches go2w_mujoco_controllers.yaml joint_trajectory_controller
+  # gains: p=100, d=1.0 (uniform across all 12 leg joints). Integral term
+  # (i=0.2, i_clamp=2.5) skipped initially; add if drift seen.
+  kp_leg: 100.0
+  kd_leg: 1.0
+
+  # Wheel parameters
+  wheel_radius_m: 0.086
+  wheel_track_m: 0.40
+  wheel_max_omega: 8.5
+
+  # Wheel-mode auto-switch threshold (m/s). At or above this commanded vx,
+  # ChampController enters _wheel_drive_step() (legs PD-hold q_stand, wheels
+  # active drive) instead of _trot_step (freewheel). Matches the original
+  # ROS2 go2w_hybrid_cmd_router wheel_linear_threshold=0.18: cruise = wheels,
+  # trot = low-speed pivots / idle. Previously 1.0 (never triggered) which
+  # forced always-trot + freewheel slip (~88% at cruise). Router's
+  # wheel_mode flag also routes here from main_champ.py.
+  wheel_mode_speed: 0.18
