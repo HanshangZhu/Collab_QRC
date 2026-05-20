@@ -39,8 +39,12 @@ class HilRelayRxNode : public rclcpp::Node {
     cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/robot/cmd_vel", 10);
     if (enable_viz_) {
       odom_pub_ = create_publisher<nav_msgs::msg::Odometry>("/robot/Odometry", 10);
+      // OccupancyGrid for RViz: map displays default to transient_local
+      // (latched) + reliable. A plain volatile QoS yields the RViz warning
+      // "incompatible QoS ... DURABILITY" and no map shows. Match RViz.
       trav_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
-          "/robot/traversability_grid", rclcpp::QoS(2));
+          "/robot/traversability_grid",
+          rclcpp::QoS(1).transient_local().reliable());
     }
 
     // cmd_vel receiver (primary).
