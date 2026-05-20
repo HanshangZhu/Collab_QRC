@@ -59,6 +59,13 @@ HIL="false"                     # HIL bench mode: sensors come from ros1_bridge
                                 # (laptop MuJoCo), NOT a real Mid-360. Skips the
                                 # NIC bind + the livox driver; expects the bridge
                                 # (run_nx_hil_bridge.sh) to publish /livox/{lidar,imu}.
+VIZ_RELAY="false"               # REAL-robot + viz: real Mid-360 sensors, but ALSO
+                                # start the UDP relay TX so the NX's viz topics
+                                # (Odometry/trav_grid/cloud/plan/way_point/cmd_vel)
+                                # stream back to the laptop's RViz2. Reuses the HIL
+                                # viz uplink (hil_relay_tx_node). Ignored if HIL=true
+                                # (HIL already runs the tx). Needs viz_laptop_ip.
+VIZ_LAPTOP_IP=""                # laptop IP for viz_relay (default 192.168.123.222)
 
 # ── Cleanup ──────────────────────────────────────────────────────────
 _kill_stack() {
@@ -95,6 +102,8 @@ for arg in "$@"; do
     weights=*)        TRAV_WEIGHTS="${arg#weights=}" ;;
     ros_ip=*)         OVERRIDE_ROS_IP="${arg#ros_ip=}" ;;
     hil=*)            HIL="${arg#hil=}" ;;
+    viz_relay=*)      VIZ_RELAY="${arg#viz_relay=}" ;;
+    viz_laptop_ip=*)  VIZ_LAPTOP_IP="${arg#viz_laptop_ip=}" ;;
     *) echo "WARN: unknown arg '$arg'" >&2 ;;
   esac
 done
@@ -103,6 +112,7 @@ case "$SLAM" in pointlio|fastlio) ;; *) echo "ERROR: slam must be pointlio|fastl
 case "$EXPLORE" in true|false) ;; *) echo "ERROR: explore must be true|false" >&2; exit 1 ;; esac
 case "$ENABLE_RVIZ" in true|false) ;; *) echo "ERROR: rviz must be true|false" >&2; exit 1 ;; esac
 case "$HIL" in true|false) ;; *) echo "ERROR: hil must be true|false" >&2; exit 1 ;; esac
+case "$VIZ_RELAY" in true|false) ;; *) echo "ERROR: viz_relay must be true|false" >&2; exit 1 ;; esac
 
 # ── Mid-360 NIC bind (real-LiDAR only; skipped in HIL — sensors come from the
 #    ros1_bridge publishing /livox/{lidar,imu} from the laptop MuJoCo) ──────
@@ -164,7 +174,8 @@ echo "    workspace : $WS_ROOT"
 echo "    namespace : $NAMESPACE"
 echo "    SLAM      : $SLAM ($SLAM_PKG/$SLAM_LAUNCH)"
 echo "    explore   : $EXPLORE (CFPA2 + goal bridge)"
-echo "    HIL       : $HIL $([ "$HIL" = true ] && echo '(sensors from ros1_bridge / laptop MuJoCo)')"
+echo "    HIL       : $HIL $([ "$HIL" = true ] && echo '(sensors from UDP relay / laptop MuJoCo)')"
+echo "    viz_relay : $VIZ_RELAY $([ "$VIZ_RELAY" = true ] && echo "(NX viz → laptop RViz2 @ ${VIZ_LAPTOP_IP:-192.168.123.222})")"
 echo "    ROS_MASTER: $ROS_MASTER_URI"
 echo "    rviz      : $ENABLE_RVIZ"
 echo "  Stop        : Ctrl+C  or  $0 stop"
@@ -227,6 +238,21 @@ else
     rostopic info /livox/lidar 2>/dev/null | grep -q "Publishers:" && break; sleep 1
   done
   echo "      /livox/lidar advertised."
+
+  # REAL-robot + viz uplink: real Mid-360 above provides the sensors; here we
+  # ALSO start the UDP relay TX so the NX's viz topics (Odometry, trav_grid,
+  # cloud_registered_body, plan, way_point_coord, cmd_vel, tf) stream back to
+  # the laptop's RViz2 — the "complete validation" observation path. Reuses the
+  # exact HIL viz uplink; only the sensor source differs (real vs simulated).
+  if [[ "$VIZ_RELAY" == "true" ]]; then
+    VIZ_LAPTOP_IP="${VIZ_LAPTOP_IP:-192.168.123.222}"
+    echo "      viz_relay: streaming NX viz → laptop ${VIZ_LAPTOP_IP} (RViz2)"
+    nohup rosrun hil_udp_relay hil_relay_tx_node \
+      _laptop_ip:="$VIZ_LAPTOP_IP" _cmd_vel_topic:=/${NAMESPACE}/cmd_vel \
+      _cmd_vel_port:=9003 _odom_port:=9004 _trav_port:=9005 _enable_viz:=true \
+      </dev/null >/tmp/onboard_relay_tx.log 2>&1 &
+    disown $! 2>/dev/null || true
+  fi
 fi
 
 # ── 3. SLAM (Point-LIO default) ──────────────────────────────────────

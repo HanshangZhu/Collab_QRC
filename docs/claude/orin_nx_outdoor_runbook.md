@@ -35,25 +35,31 @@ first broken link. Most likely fixes (from desktop-standalone history in CLAUDE.
 **Done when:** in HIL, the MuJoCo robot physically drives toward CFPA2 frontiers
 (cmd_vel 20Hz, odom bbox grows). THIS proves end-to-end autonomy logic.
 
-## Stage 2 — Real Point-LIO on the real Mid-360 (~1-2h)
+## Stage 2 — Real Point-LIO on the real Mid-360 ✅ ALREADY VERIFIED (indoor)
 
-Why: HIL fed simulated lidar. Real Mid-360 + walking Go2 is where SLAM breaks
-(CLAUDE.md: z-drift +5.8m if IMU init during stand-up). Validate SLAM ALONE
-before adding nav.
+Real-robot indoor Point-LIO was validated in a prior session (10Hz Odometry,
+no z-drift). Skip the standalone re-verify unless something changed; go straight
+to the viz uplink (below) so you can WATCH the NX's SLAM from the laptop.
+
+## Stage 2.5 — Viz uplink: laptop RViz2 watches the real NX (~0.5-1h) ★ "complete validation"
+
+Why: to validate the NX completely from the operator side, stream its viz topics
+(Odometry, traversability_grid, cloud, plan, way_point, cmd_vel, tf) back to the
+laptop RViz2. Reuses the HIL UDP relay viz uplink — only the sensor source
+differs (real Mid-360 vs simulated). NO ros1_bridge/DDS cost on the NX.
 
 ```bash
-# NX, real sensors (NOT hil):
-~/autonomous_exploration_zhu/scripts/onboard_autonomy_noetic.sh explore=false   # SLAM+trav+nav, no auto-goals
-# verify on the robot, stationary then hand-walked:
-rostopic hz /robot/Odometry          # ~10Hz, stable
-rostopic echo -n1 /robot/Odometry/pose/pose/position   # z should NOT drift (<0.2m)
+# NX — real sensors + viz uplink (NEW viz_relay flag):
+~/autonomous_exploration_zhu/scripts/onboard_autonomy_noetic.sh \
+    explore=false viz_relay=true viz_laptop_ip=192.168.123.222
+# laptop — receive + RViz2:
+./scripts/launch/nx_viz_laptop.sh
 ```
-- **MUST**: lifecycle-gate Point-LIO IMU init until robot settled (stand-up done).
-  Do NOT use SIM_GT_ODOM (that's sim-only).
-- Watch z-drift: if it climbs, the IMU init fired during motion — fix gating.
+Expect in RViz2: SLAM map building, trav grid, robot trajectory, frontier goals —
+all computed on the real NX, observed on the laptop. This is the closed-loop
+observation tool you use while tuning Stage 3.
 
-**Done when:** carry/walk the robot a few meters, SLAM trajectory matches reality
-(~1m/s, no flying z).
+**Done when:** laptop RViz2 shows the live NX SLAM + trav grid from real sensors.
 
 ## Stage 3 — Indoor / flat autonomous exploration (~2-3h)
 
