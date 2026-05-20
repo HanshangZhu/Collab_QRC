@@ -372,12 +372,11 @@ def summarise_records(records: list[TrialRecord]) -> dict[tuple[str, str], dict[
             ]
             ever_touched = [_robot_bool(r, ns, "safety", "ever_touched") for r in group]
             tipped = [_robot_bool(r, ns, "progress", "tipped_over") for r in group]
-            degraded = [
-                1.0 if _robot_nested_value(
-                    r, ns, "progress", "degraded_tilt", "entry_count"
-                ) > 0.0 else 0.0
+            degraded_entries = [
+                _robot_nested_value(r, ns, "progress", "degraded_tilt", "entry_count")
                 for r in group
             ]
+            degraded = [1.0 if count > 0.0 else 0.0 for count in degraded_entries]
             slam_mean = [
                 _robot_value(r, ns, "slam", "trans_error_mean_m")
                 for r in group
@@ -396,9 +395,13 @@ def summarise_records(records: list[TrialRecord]) -> dict[tuple[str, str], dict[
             entry[f"{ns}_obstacle_contacts_mean"] = _mean(obstacle_contacts)
             entry[f"{ns}_ever_touched_rate"] = _mean(ever_touched)
             entry[f"{ns}_tipped_over_rate"] = _mean(tipped)
+            entry[f"{ns}_tipped_events_mean"] = _mean(tipped)
             entry[f"{ns}_degraded_tilt_rate"] = _mean(degraded)
+            entry[f"{ns}_degraded_tilt_events_mean"] = _mean(degraded_entries)
             entry[f"{ns}_slam_trans_error_mean_m_mean"] = _mean(slam_mean)
             entry[f"{ns}_slam_trans_error_final_m_mean"] = _mean(slam_final)
+            entry[f"{ns}_slam_translation_error_m_mean"] = _mean(slam_mean)
+            entry[f"{ns}_slam_translation_error_final_m_mean"] = _mean(slam_final)
         summary[key] = entry
     return summary
 
