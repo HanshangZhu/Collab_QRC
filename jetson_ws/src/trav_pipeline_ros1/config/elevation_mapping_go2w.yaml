@@ -32,8 +32,8 @@ max_height_range: 1.7
 ramped_height_range_a: 0.5
 ramped_height_range_b: 1.7
 ramped_height_range_c: 0.2
-# Mid-360 blind zone: < 0.30 m in front of sensor → skip near-field noise.
-min_valid_distance: 0.30
+# Mid-360 blind zone: raised to 0.40 m (0.30 let in near-field leg returns).
+min_valid_distance: 0.40
 
 # Update rates
 map_acquire_fps: 5.0

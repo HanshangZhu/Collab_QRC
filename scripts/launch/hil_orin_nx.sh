@@ -16,9 +16,13 @@
 #
 # Usage:
 #   ./scripts/launch/hil_orin_nx.sh up           # start everything
+#   ./scripts/launch/hil_orin_nx.sh up lidar_range=2.5 max_vel=0.4   # + tunables
 #   ./scripts/launch/hil_orin_nx.sh stop         # kill BOTH sides
 #   ./scripts/launch/hil_orin_nx.sh status        # what's running where
 #   ./scripts/launch/hil_orin_nx.sh monitor       # jtop + topic hz, no (re)start
+#
+# Any k=v args after `up` are forwarded to the NX onboard stack
+# (lidar_range, max_vel, max_vel_ang, slam, namespace, …).
 #
 # Env knobs:
 #   NX_USER (unitree)  NX_HOST (192.168.123.18)  NX_PASS (123)
@@ -80,12 +84,19 @@ do_monitor() {
   done
 }
 
-case "${1:-up}" in
+# First positional = subcommand; any k=v args AFTER `up` are forwarded verbatim
+# to the NX onboard_autonomy_noetic.sh (e.g. lidar_range=2.5 max_vel=0.4).
+SUBCMD="${1:-up}"; shift || true
+ONBOARD_EXTRA=""
+for a in "$@"; do
+  case "$a" in *=*) ONBOARD_EXTRA="${ONBOARD_EXTRA} $a" ;; esac
+done
+case "$SUBCMD" in
   stop)    kill_laptop; kill_nx; banner "Stopped both sides"; exit 0 ;;
   status)  do_status; exit 0 ;;
   monitor) do_monitor; exit 0 ;;
   up) ;;
-  *) echo "usage: $0 [up|stop|status|monitor]" >&2; exit 1 ;;
+  *) echo "usage: $0 [up|stop|status|monitor] [lidar_range=N] [max_vel=N] [max_vel_ang=N]" >&2; exit 1 ;;
 esac
 
 # ── reachability ─────────────────────────────────────────────────────
@@ -123,7 +134,8 @@ banner "Start NX autonomy stack (hil=true) — roscore + UDP relay + compute"
 EXPLORE_ARG="explore=true"; [[ "${NO_EXPLORE:-0}" = "1" ]] && EXPLORE_ARG="explore=false"
 # Pass the laptop's IP so the NX relay tx can send cmd_vel/viz back.
 LAPTOP_IP="${LAPTOP_IP:-192.168.123.222}"
-SSH "HIL_LAPTOP_IP=${LAPTOP_IP} setsid nohup ${NX_WS}/scripts/onboard_autonomy_noetic.sh hil=true ${EXPLORE_ARG} </dev/null >/tmp/hil_nx_stack.log 2>&1 & echo started" >/dev/null 2>&1
+[[ -n "$ONBOARD_EXTRA" ]] && echo "  forwarding to NX onboard:${ONBOARD_EXTRA}"
+SSH "HIL_LAPTOP_IP=${LAPTOP_IP} setsid nohup ${NX_WS}/scripts/onboard_autonomy_noetic.sh hil=true ${EXPLORE_ARG}${ONBOARD_EXTRA} </dev/null >/tmp/hil_nx_stack.log 2>&1 & echo started" >/dev/null 2>&1
 ok "NX stack launching (log on NX: /tmp/hil_nx_stack.log)"
 sleep 4
 SSH "grep -qE 'relay rx|/livox/lidar present' /tmp/hil_nx_stack.log 2>/dev/null && echo '  ✓ NX relay + sensors wiring up' || tail -3 /tmp/hil_nx_stack.log 2>/dev/null" 2>/dev/null

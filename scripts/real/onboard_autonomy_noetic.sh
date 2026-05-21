@@ -21,11 +21,15 @@
 #   map → camera_init → body → base_link    (move_base needs map→base_link)
 #
 # Usage (run ON the NX):
-#   ./onboard_autonomy_noetic.sh                      # full stack, ns=robot
-#   ./onboard_autonomy_noetic.sh explore=false        # nav only, no CFPA2
-#   ./onboard_autonomy_noetic.sh slam=fastlio          # FAST-LIO instead of Point-LIO
+#   ./onboard_autonomy_noetic.sh                           # full stack, ns=robot
+#   ./onboard_autonomy_noetic.sh explore=false             # nav only, no CFPA2
+#   ./onboard_autonomy_noetic.sh slam=fastlio               # FAST-LIO instead of Point-LIO
 #   ./onboard_autonomy_noetic.sh rviz=true
-#   ./onboard_autonomy_noetic.sh stop                  # tear everything down
+#   ./onboard_autonomy_noetic.sh viz_relay=true viz_laptop_ip=192.168.123.222
+#   ./onboard_autonomy_noetic.sh lidar_range=2.5           # accept points up to 2.5m above sensor
+#   ./onboard_autonomy_noetic.sh max_vel=0.50              # faster in open areas
+#   ./onboard_autonomy_noetic.sh max_vel=0.15 max_vel_ang=0.5  # cautious in tight space
+#   ./onboard_autonomy_noetic.sh stop                      # tear everything down
 #
 # Ctrl+C exits cleanly via trap. Component logs in /tmp/onboard_*.log.
 
@@ -66,6 +70,15 @@ VIZ_RELAY="false"               # REAL-robot + viz: real Mid-360 sensors, but AL
                                 # viz uplink (hil_relay_tx_node). Ignored if HIL=true
                                 # (HIL already runs the tx). Needs viz_laptop_ip.
 VIZ_LAPTOP_IP=""                # laptop IP for viz_relay (default 192.168.123.222)
+# ── Tunable runtime params (overridable at launch time) ──────────────
+LIDAR_RANGE="1.7"               # elevation_mapping max_height_range (m above sensor).
+                                # Default 1.7 m cuts ceilings at ~2.2 m world-z.
+                                # Increase to 2.5 for taller spaces; decrease to 1.2
+                                # for low-ceiling environments or drone tests.
+MAX_VEL="0.30"                  # MPPI vx_max (m/s).  Default 0.30 m/s (conservative
+                                # indoor).  Raise to 0.50 for open corridors; lower to
+                                # 0.15 for tight / cluttered spaces.
+MAX_VEL_ANG="0.8"              # MPPI wz_max (rad/s). Default 0.8 matches sim tuning.
 
 # ── Cleanup ──────────────────────────────────────────────────────────
 _kill_stack() {
@@ -104,6 +117,9 @@ for arg in "$@"; do
     hil=*)            HIL="${arg#hil=}" ;;
     viz_relay=*)      VIZ_RELAY="${arg#viz_relay=}" ;;
     viz_laptop_ip=*)  VIZ_LAPTOP_IP="${arg#viz_laptop_ip=}" ;;
+    lidar_range=*)    LIDAR_RANGE="${arg#lidar_range=}" ;;
+    max_vel=*)        MAX_VEL="${arg#max_vel=}" ;;
+    max_vel_ang=*)    MAX_VEL_ANG="${arg#max_vel_ang=}" ;;
     *) echo "WARN: unknown arg '$arg'" >&2 ;;
   esac
 done
@@ -178,6 +194,8 @@ echo "    HIL       : $HIL $([ "$HIL" = true ] && echo '(sensors from UDP relay 
 echo "    viz_relay : $VIZ_RELAY $([ "$VIZ_RELAY" = true ] && echo "(NX viz → laptop RViz2 @ ${VIZ_LAPTOP_IP:-192.168.123.222})")"
 echo "    ROS_MASTER: $ROS_MASTER_URI"
 echo "    rviz      : $ENABLE_RVIZ"
+echo "    lidar_range: ${LIDAR_RANGE} m  (elevation max_height_range above sensor)"
+echo "    max_vel    : ${MAX_VEL} m/s  (MPPI vx_max)   wz_max: ${MAX_VEL_ANG} rad/s"
 echo "  Stop        : Ctrl+C  or  $0 stop"
 echo "################################################"
 echo ""
@@ -278,6 +296,18 @@ setsid -f rosrun tf2_ros static_transform_publisher \
 echo "      map→camera_init, body→base_link, map→odom published."
 
 # ── 5. traversability pipeline ───────────────────────────────────────
+# lidar_range override: elevation_mapping_cupy reads max_height_range from
+# its YAML at STARTUP (not per-frame), so we must edit the YAML BEFORE the
+# trav pipeline launches — a post-launch rosparam set is read too late.
+# In-place sed both the hard gate (max_height_range) and the ramped gate's
+# upper bound (ramped_height_range_b) to the requested value.
+TRAV_YAML="$(rospack find trav_pipeline_ros1)/config/elevation_mapping_go2w.yaml"
+if [[ -f "$TRAV_YAML" ]]; then
+  sed -i -E "s/^(max_height_range:).*/\1 ${LIDAR_RANGE}/" "$TRAV_YAML"
+  sed -i -E "s/^(ramped_height_range_b:).*/\1 ${LIDAR_RANGE}/" "$TRAV_YAML"
+  echo "      lidar_range → max_height_range=${LIDAR_RANGE} m (patched ${TRAV_YAML##*/})"
+fi
+
 echo "[5/8] trav pipeline (elevation_mapping_cupy + filter)..."
 WEIGHT_ARG=""
 [[ -n "$TRAV_WEIGHTS" ]] && WEIGHT_ARG="weight_file:=${TRAV_WEIGHTS}"
@@ -291,6 +321,14 @@ echo "      /${NAMESPACE}/traversability_grid up (or still warming — check /tm
 
 # ── 6. move_base (nav_algo SmacLattice + CUDA-MPPI) ──────────────────
 echo "[6/8] move_base (nav_algo)..."
+# Override MPPI velocity params via rosparam BEFORE move_base starts so
+# MPPIControllerROS picks them up from the parameter server on configure.
+# The MPPI plugin reads vx_max / wz_max from its private namespace
+# (~) = /<ns>/move_base/<plugin_name>/.
+MPPI_NS="/${NAMESPACE}/move_base/MPPIControllerROS"
+rosparam set "${MPPI_NS}/vx_max"  "$MAX_VEL"     2>/dev/null || true
+rosparam set "${MPPI_NS}/wz_max"  "$MAX_VEL_ANG" 2>/dev/null || true
+echo "      MPPI params pre-set: vx_max=${MAX_VEL} wz_max=${MAX_VEL_ANG}"
 nohup roslaunch nav_algo_bringup move_base.launch robot_ns:="$NAMESPACE" \
   </dev/null >/tmp/onboard_movebase.log 2>&1 &
 disown $! 2>/dev/null || true

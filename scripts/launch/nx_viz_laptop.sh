@@ -19,6 +19,8 @@ WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [[ "${1:-}" == "stop" ]]; then
   pkill -9 -f "hil_relay_rx_node" 2>/dev/null || true
+  pkill -9 -f "odom_to_tf" 2>/dev/null || true
+  pkill -9 -f "static_transform_publisher.*map.*camera_init" 2>/dev/null || true
   pkill -9 -f "rviz2.*nx_viz" 2>/dev/null || true
   echo "nx_viz stopped."
   exit 0
@@ -48,6 +50,23 @@ ros2 run hil_udp_relay hil_relay_rx_node --ros-args \
 RX_PID=$!
 echo "  relay RX up (log: /tmp/nx_viz_rx.log)"
 
+# TF bridge: /robot/Odometry → TF (camera_init→body).
+# The NX tx_node doesn't forward /tf; we reconstruct it from the Odometry pose.
+python3 "${WS_DIR}/scripts/runtime/odom_to_tf.py" \
+  >/tmp/nx_viz_odom_tf.log 2>&1 &
+ODOM_TF_PID=$!
+echo "  odom_to_tf bridge up (camera_init→body, log: /tmp/nx_viz_odom_tf.log)"
+
+# Static TF: map→camera_init (identity).
+# Point-LIO initialises camera_init at the origin; trav_grid is published in
+# the 'map' frame by move_base. Publishing identity here aligns both frames so
+# RViz2 can show trav grid and the robot pose in the same Fixed Frame (map).
+ros2 run tf2_ros static_transform_publisher \
+  0 0 0 0 0 0 map camera_init \
+  >/tmp/nx_viz_static_tf.log 2>&1 &
+STATIC_TF_PID=$!
+echo "  static TF map→camera_init published (identity)"
+
 if [[ "$ENABLE_RVIZ" == "true" ]]; then
   # Reuse the HIL rviz config if present, else the nav_test default.
   RVIZ_CFG="${WS_DIR}/src/go2w/go2_gazebo_sim/rviz/hil_nx.rviz"
@@ -58,6 +77,6 @@ if [[ "$ENABLE_RVIZ" == "true" ]]; then
 fi
 
 echo "  Ctrl+C to stop."
-cleanup() { kill "$RX_PID" "${RVIZ_PID:-}" 2>/dev/null || true; }
+cleanup() { kill "$RX_PID" "${ODOM_TF_PID:-}" "${STATIC_TF_PID:-}" "${RVIZ_PID:-}" 2>/dev/null || true; }
 trap cleanup INT TERM EXIT
 wait "$RX_PID"
