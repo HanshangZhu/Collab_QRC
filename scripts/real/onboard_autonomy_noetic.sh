@@ -26,7 +26,8 @@
 #   ./onboard_autonomy_noetic.sh slam=fastlio               # FAST-LIO instead of Point-LIO
 #   ./onboard_autonomy_noetic.sh rviz=true
 #   ./onboard_autonomy_noetic.sh viz_relay=true viz_laptop_ip=192.168.123.222
-#   ./onboard_autonomy_noetic.sh lidar_range=2.5           # accept points up to 2.5m above sensor
+#   ./onboard_autonomy_noetic.sh lidar_range=8.0           # radial SLAM point range cap
+#   ./onboard_autonomy_noetic.sh trav_height_range=2.5     # accept points up to 2.5m above sensor
 #   ./onboard_autonomy_noetic.sh max_vel=0.50              # faster in open areas
 #   ./onboard_autonomy_noetic.sh max_vel=0.15 max_vel_ang=0.5  # cautious in tight space
 #   ./onboard_autonomy_noetic.sh stop                      # tear everything down
@@ -70,8 +71,17 @@ VIZ_RELAY="false"               # REAL-robot + viz: real Mid-360 sensors, but AL
                                 # viz uplink (hil_relay_tx_node). Ignored if HIL=true
                                 # (HIL already runs the tx). Needs viz_laptop_ip.
 VIZ_LAPTOP_IP=""                # laptop IP for viz_relay (default 192.168.123.222)
+EXECUTE_CONTROLLER="true"       # true = send /<ns>/cmd_vel to Unitree Sport API.
+                                # false = nav dry-run only; /<ns>/cmd_vel is visible
+                                # but the real robot will not move.
+SPORT_DDS_INTERFACE=""          # SDK2 network interface; empty = auto. For Go2
+                                # Ethernet this is usually eth0.
 # ── Tunable runtime params (overridable at launch time) ──────────────
-LIDAR_RANGE="1.7"               # elevation_mapping max_height_range (m above sensor).
+LIDAR_RANGE="8.0"               # radial LiDAR range cap (m): SLAM preprocess
+                                # mapping.det_range, i.e. r in polar/spherical
+                                # coordinates. This is NOT the traversability
+                                # ceiling gate.
+TRAV_HEIGHT_RANGE="1.7"         # elevation_mapping max_height_range (m above sensor).
                                 # Default 1.7 m cuts ceilings at ~2.2 m world-z.
                                 # Increase to 2.5 for taller spaces; decrease to 1.2
                                 # for low-ceiling environments or drone tests.
@@ -82,11 +92,14 @@ MAX_VEL_ANG="0.8"              # MPPI wz_max (rad/s). Default 0.8 matches sim tu
 
 # ── Cleanup ──────────────────────────────────────────────────────────
 _kill_stack() {
+  pkill -INT -f "ros1_cmd_vel_to_sport.py" 2>/dev/null || true
+  sleep 0.2
   for p in cfpa2_single_robot_node_cpp cfpa2_coordinator_node_cpp \
            cfpa2_to_movebase_bridge move_base \
            elevation_mapping_node trav_filter_occ_grid \
            pointlio_mapping laserMapping fastlio_mapping \
            livox_ros_driver2_node static_transform_publisher \
+           ros1_cmd_vel_to_sport.py cmd_vel_to_sport_bridge \
            hil_relay_rx_node hil_relay_tx_node \
            "topic_tools relay" rosout rosmaster; do
     pkill -9 -f "$p" 2>/dev/null || true
@@ -117,7 +130,10 @@ for arg in "$@"; do
     hil=*)            HIL="${arg#hil=}" ;;
     viz_relay=*)      VIZ_RELAY="${arg#viz_relay=}" ;;
     viz_laptop_ip=*)  VIZ_LAPTOP_IP="${arg#viz_laptop_ip=}" ;;
+    execute=*)        EXECUTE_CONTROLLER="${arg#execute=}" ;;
+    sport_interface=*) SPORT_DDS_INTERFACE="${arg#sport_interface=}" ;;
     lidar_range=*)    LIDAR_RANGE="${arg#lidar_range=}" ;;
+    trav_height_range=*) TRAV_HEIGHT_RANGE="${arg#trav_height_range=}" ;;
     max_vel=*)        MAX_VEL="${arg#max_vel=}" ;;
     max_vel_ang=*)    MAX_VEL_ANG="${arg#max_vel_ang=}" ;;
     *) echo "WARN: unknown arg '$arg'" >&2 ;;
@@ -129,6 +145,7 @@ case "$EXPLORE" in true|false) ;; *) echo "ERROR: explore must be true|false" >&
 case "$ENABLE_RVIZ" in true|false) ;; *) echo "ERROR: rviz must be true|false" >&2; exit 1 ;; esac
 case "$HIL" in true|false) ;; *) echo "ERROR: hil must be true|false" >&2; exit 1 ;; esac
 case "$VIZ_RELAY" in true|false) ;; *) echo "ERROR: viz_relay must be true|false" >&2; exit 1 ;; esac
+case "$EXECUTE_CONTROLLER" in true|false) ;; *) echo "ERROR: execute must be true|false" >&2; exit 1 ;; esac
 
 # ── Mid-360 NIC bind (real-LiDAR only; skipped in HIL — sensors come from the
 #    ros1_bridge publishing /livox/{lidar,imu} from the laptop MuJoCo) ──────
@@ -194,7 +211,9 @@ echo "    HIL       : $HIL $([ "$HIL" = true ] && echo '(sensors from UDP relay 
 echo "    viz_relay : $VIZ_RELAY $([ "$VIZ_RELAY" = true ] && echo "(NX viz → laptop RViz2 @ ${VIZ_LAPTOP_IP:-192.168.123.222})")"
 echo "    ROS_MASTER: $ROS_MASTER_URI"
 echo "    rviz      : $ENABLE_RVIZ"
-echo "    lidar_range: ${LIDAR_RANGE} m  (elevation max_height_range above sensor)"
+echo "    execute   : $EXECUTE_CONTROLLER $([ "$EXECUTE_CONTROLLER" = true ] && echo "(cmd_vel → Unitree Sport API)")"
+echo "    lidar_range: ${LIDAR_RANGE} m  (radial SLAM preprocess mapping.det_range)"
+echo "    trav_height_range: ${TRAV_HEIGHT_RANGE} m  (elevation max_height_range above sensor)"
 echo "    max_vel    : ${MAX_VEL} m/s  (MPPI vx_max)   wz_max: ${MAX_VEL_ANG} rad/s"
 echo "  Stop        : Ctrl+C  or  $0 stop"
 echo "################################################"
@@ -228,13 +247,15 @@ if [[ "$HIL" == "true" ]]; then
   #   tx: sends /<ns>/cmd_vel (+ viz) back to the laptop
   echo "      starting hil_udp_relay rx (sensors in) + tx (cmd_vel/viz out)..."
   nohup rosrun hil_udp_relay hil_relay_rx_node \
-    _lidar_port:=9001 _imu_port:=9002 \
+    _lidar_port:=9001 _imu_port:=9002 _goal_port:=9007 \
+    _enable_sensors:=true _enable_goal:=true \
     </dev/null >/tmp/onboard_relay_rx.log 2>&1 &
   disown $! 2>/dev/null || true
   HIL_LAPTOP_IP="${HIL_LAPTOP_IP:-192.168.123.222}"
   nohup rosrun hil_udp_relay hil_relay_tx_node \
     _laptop_ip:="$HIL_LAPTOP_IP" _cmd_vel_topic:=/${NAMESPACE}/cmd_vel \
-    _cmd_vel_port:=9003 _odom_port:=9004 _trav_port:=9005 _enable_viz:=true \
+    _cmd_vel_port:=9003 _odom_port:=9004 _trav_port:=9005 _waypoint_port:=9006 _plan_port:=9008 \
+    _plan_topic:=/${NAMESPACE}/move_base/SmacLatticePlannerROS/plan _enable_viz:=true \
     </dev/null >/tmp/onboard_relay_tx.log 2>&1 &
   disown $! 2>/dev/null || true
   for i in $(seq 1 60); do
@@ -264,16 +285,31 @@ else
   # exact HIL viz uplink; only the sensor source differs (real vs simulated).
   if [[ "$VIZ_RELAY" == "true" ]]; then
     VIZ_LAPTOP_IP="${VIZ_LAPTOP_IP:-192.168.123.222}"
+    echo "      viz_relay: accepting laptop /goal_pose on UDP 9007 → /${NAMESPACE}/move_base_simple/goal"
+    nohup rosrun hil_udp_relay hil_relay_rx_node \
+      _goal_port:=9007 _enable_sensors:=false _enable_goal:=true \
+      </dev/null >/tmp/onboard_relay_goal_rx.log 2>&1 &
+    disown $! 2>/dev/null || true
     echo "      viz_relay: streaming NX viz → laptop ${VIZ_LAPTOP_IP} (RViz2)"
     nohup rosrun hil_udp_relay hil_relay_tx_node \
       _laptop_ip:="$VIZ_LAPTOP_IP" _cmd_vel_topic:=/${NAMESPACE}/cmd_vel \
-      _cmd_vel_port:=9003 _odom_port:=9004 _trav_port:=9005 _enable_viz:=true \
+      _cmd_vel_port:=9003 _odom_port:=9004 _trav_port:=9005 _waypoint_port:=9006 _plan_port:=9008 \
+      _plan_topic:=/${NAMESPACE}/move_base/SmacLatticePlannerROS/plan _enable_viz:=true \
       </dev/null >/tmp/onboard_relay_tx.log 2>&1 &
     disown $! 2>/dev/null || true
   fi
 fi
 
 # ── 3. SLAM (Point-LIO default) ──────────────────────────────────────
+SLAM_YAML="$(rospack find "$SLAM_PKG")/config/mid360.yaml"
+if [[ -f "$SLAM_YAML" ]]; then
+  if grep -qE "^[[:space:]]*det_range:" "$SLAM_YAML"; then
+    sed -i -E "s/^([[:space:]]*det_range:).*/\1 ${LIDAR_RANGE}/" "$SLAM_YAML"
+  else
+    sed -i -E "/^[[:space:]]*mapping:/a\\    det_range: ${LIDAR_RANGE}" "$SLAM_YAML"
+  fi
+  echo "      lidar_range → mapping.det_range=${LIDAR_RANGE} m (patched ${SLAM_YAML})"
+fi
 echo "[3/8] $SLAM_PKG ($SLAM_LAUNCH, ns=${NAMESPACE})..."
 ROS_NAMESPACE="$NAMESPACE" nohup \
   roslaunch "$SLAM_PKG" "$SLAM_LAUNCH" rviz:=false \
@@ -283,6 +319,13 @@ for i in $(seq 1 15); do
   rostopic info "/${NAMESPACE}/Odometry" 2>/dev/null | grep -q "Publishers:" && break; sleep 1
 done
 echo "      /${NAMESPACE}/Odometry up."
+
+# Nav and CFPA2 both use /<ns>/odom/nav as their odometry input on the onboard
+# ROS 1 stack. Keep this relay outside the explore branch so manual nav mode
+# (explore=false) still has the odom source required by move_base/MPPI.
+echo "      odom relay /${NAMESPACE}/Odometry → /${NAMESPACE}/odom/nav"
+setsid -f rosrun topic_tools relay "/${NAMESPACE}/Odometry" "/${NAMESPACE}/odom/nav" \
+  </dev/null >/tmp/onboard_odom_relay.log 2>&1
 
 # ── 4. static TFs (Mid-360 mount tilt; chain map→camera_init→body→base_link) ─
 echo "[4/8] static TFs..."
@@ -296,16 +339,16 @@ setsid -f rosrun tf2_ros static_transform_publisher \
 echo "      map→camera_init, body→base_link, map→odom published."
 
 # ── 5. traversability pipeline ───────────────────────────────────────
-# lidar_range override: elevation_mapping_cupy reads max_height_range from
+# trav_height_range override: elevation_mapping_cupy reads max_height_range from
 # its YAML at STARTUP (not per-frame), so we must edit the YAML BEFORE the
 # trav pipeline launches — a post-launch rosparam set is read too late.
 # In-place sed both the hard gate (max_height_range) and the ramped gate's
 # upper bound (ramped_height_range_b) to the requested value.
 TRAV_YAML="$(rospack find trav_pipeline_ros1)/config/elevation_mapping_go2w.yaml"
 if [[ -f "$TRAV_YAML" ]]; then
-  sed -i -E "s/^(max_height_range:).*/\1 ${LIDAR_RANGE}/" "$TRAV_YAML"
-  sed -i -E "s/^(ramped_height_range_b:).*/\1 ${LIDAR_RANGE}/" "$TRAV_YAML"
-  echo "      lidar_range → max_height_range=${LIDAR_RANGE} m (patched ${TRAV_YAML##*/})"
+  sed -i -E "s/^(max_height_range:).*/\1 ${TRAV_HEIGHT_RANGE}/" "$TRAV_YAML"
+  sed -i -E "s/^(ramped_height_range_b:).*/\1 ${TRAV_HEIGHT_RANGE}/" "$TRAV_YAML"
+  echo "      trav_height_range → max_height_range=${TRAV_HEIGHT_RANGE} m (patched ${TRAV_YAML##*/})"
 fi
 
 echo "[5/8] trav pipeline (elevation_mapping_cupy + filter)..."
@@ -337,9 +380,31 @@ for i in $(seq 1 15); do
 done
 echo "      move_base up."
 
-# ── 7 + 8. CFPA2 + goal bridge (explore mode) ────────────────────────
+# ── 7. Real robot actuation bridge ───────────────────────────────────
+if [[ "$EXECUTE_CONTROLLER" == "true" ]]; then
+  SPORT_IFACE="${SPORT_DDS_INTERFACE:-$LIVOX_NIC}"
+  echo "[7/9] cmd_vel → Unitree Sport API bridge..."
+  PYTHONPATH="/home/unitree/unitree_sdk2_python:/home/unitree/miniconda3/envs/by/lib/python3.8/site-packages:${PYTHONPATH:-}" \
+  LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}" \
+    nohup python3 "${WS_ROOT}/scripts/ros1_cmd_vel_to_sport.py" \
+      _namespace:="$NAMESPACE" \
+      _cmd_vel_topic:="/${NAMESPACE}/cmd_vel" \
+      _dds_interface:="$SPORT_IFACE" \
+      _max_vel:="$MAX_VEL" \
+      _max_vel_ang:="$MAX_VEL_ANG" \
+      _max_vel_y:=0.0 \
+      _publish_rate:=10.0 \
+      _cmd_timeout:=0.5 \
+      </dev/null >/tmp/onboard_cmd_vel_to_sport.log 2>&1 &
+  disown $! 2>/dev/null || true
+  echo "      bridge: /${NAMESPACE}/cmd_vel → SportClient.Move via ${SPORT_IFACE:-auto} (log: /tmp/onboard_cmd_vel_to_sport.log)"
+else
+  echo "[7/9] execute=false — /${NAMESPACE}/cmd_vel is NOT sent to Unitree Sport API."
+fi
+
+# ── 8 + 9. CFPA2 + goal bridge (explore mode) ────────────────────────
 if [[ "$EXPLORE" == "true" ]]; then
-  echo "[7/8] CFPA2 single-robot (C++)..."
+  echo "[8/9] CFPA2 single-robot (C++)..."
   # The ROS 1 CFPA2 node reads every param individually from its PRIVATE
   # namespace (~) via the param_facade — there is NO config_file loader.
   # So we rosparam-load the base yaml + ops2 overlay into the node's private
@@ -370,19 +435,13 @@ if [[ "$EXPLORE" == "true" ]]; then
   # that topic never appears at the Nav2 path → CFPA2 hangs "Waiting for map".
   # Plan directly on the trav grid (publishes at ~5 Hz) instead — same 2D BFS.
   rosparam set "${CFPA2_PRIV}/planning_map_topic_suffix" "/traversability_grid"
-  # CFPA2 reads robot pose from /<ns>/odom/nav (hardcoded). Point-LIO publishes
-  # /<ns>/Odometry; relay it so CFPA2 (and the bridge) get pose. In the Nav2 sim
-  # fast_lio_tf_adapter does this; onboard we use a topic_tools relay.
-  echo "      odom relay /${NAMESPACE}/Odometry → /${NAMESPACE}/odom/nav"
-  setsid -f rosrun topic_tools relay "/${NAMESPACE}/Odometry" "/${NAMESPACE}/odom/nav" \
-    </dev/null >/tmp/onboard_odom_relay.log 2>&1
   ROS_NAMESPACE="$NAMESPACE" nohup \
     rosrun cfpa2_collaborative_autonomy cfpa2_single_robot_node_cpp \
       </dev/null >/tmp/onboard_cfpa2.log 2>&1 &
   disown $! 2>/dev/null || true
   echo "      CFPA2 started (log: /tmp/onboard_cfpa2.log)."
 
-  echo "[8/8] cfpa2_to_movebase_bridge..."
+  echo "[9/9] cfpa2_to_movebase_bridge..."
   ROS_NAMESPACE="$NAMESPACE" nohup \
     rosrun trav_pipeline_ros1 cfpa2_to_movebase_bridge.py \
       _namespace:="$NAMESPACE" \
@@ -390,7 +449,7 @@ if [[ "$EXPLORE" == "true" ]]; then
   disown $! 2>/dev/null || true
   echo "      bridge: /${NAMESPACE}/way_point_coord → /${NAMESPACE}/move_base_simple/goal"
 else
-  echo "[7/8] explore=false — CFPA2 + bridge skipped (nav-only / manual-goal mode)."
+  echo "[8/9] explore=false — CFPA2 + bridge skipped (nav-only / manual-goal mode)."
 fi
 
 # ── Optional RViz ────────────────────────────────────────────────────
@@ -408,6 +467,7 @@ echo "    rostopic hz /livox/lidar                     # ~10 Hz"
 echo "    rostopic hz /${NAMESPACE}/Odometry           # ~10 Hz (SLAM)"
 echo "    rostopic hz /${NAMESPACE}/traversability_grid"
 echo "    rostopic echo -n1 /${NAMESPACE}/cmd_vel      # move_base output"
+echo "    tail -f /tmp/onboard_cmd_vel_to_sport.log    # real execution bridge"
 echo "    rostopic echo -n1 /${NAMESPACE}/way_point_coord  # CFPA2 frontier goal"
 echo "    rosrun tf2_tools view_frames.py              # TF tree PDF"
 echo ""
