@@ -86,7 +86,17 @@
         type: gridMapFilters/ThresholdFilter
         params:
           layer: step_residual
-          lower_threshold: 0.0
+          # 0.08 m noise floor: mesh-artifact elevation spikes from the
+          # SLAM-reconstructed ops2 floor (σ_mesh ≈ 2-5 cm → 3σ ≈ 6 cm) and
+          # MuJoCo geometry noise produce step_residuals of 4-7 cm. Without this
+          # gate, isolated cells at z=floor+0.07 m cause step_cost=0.35,
+          # trav_eth=0.65 → near-lethal scattered "specular" red dots on the
+          # floor. Raising the noise floor to 8 cm clears these while keeping
+          # real 10+ cm steps lethal (a 10 cm step → step_cost=0.5, borderline
+          # but navigable with consider_footprint=true in Nav2).
+          # Real robot: re-tune against actual floor flatness (polished concrete
+          # σ ≈ 1-2 cm → 6 cm threshold sufficient; rough industrial ≈ 8 cm).
+          lower_threshold: 0.08
           set_to: 0.0
 
       # 8. step_cost: slope-compensated residual cost. Linear 0 -> 1 over
@@ -101,26 +111,78 @@
           output_layer: step_cost
           expression: step_residual / 0.20
 
-      # 10. wall_seed: raw step_height in excess of 0.25 m. This is the
-      #     "unambiguous vertical structure" detector. On any slope at our
-      #     0.10 m resolution + σ=0.02 m noise, step_height is bounded by
-      #     ~0.10 m, so wall_seed ≤ 0 -> clamped to 0. Only true walls /
-      #     cliffs (step_height ≈ wall_full_height ≈ 1 m at the rim) survive.
-      #     Decoupling this from step_residual prevents ramp noise from
-      #     producing false-positive lethal cells after dilation below.
+      # 8. Variance confidence gate on step_cost.
+      #    Specular LiDAR returns off shiny floors create single-cell elevation
+      #    outliers. On flat floor (slope≈0): step_residual ≈ step_height, so
+      #    one outlier at z=floor+0.25m → step_cost=1.25 → trav_eth=0 → lethal.
       #
-      #     NOTE: filters::FilterChain (filter_chain.hpp:117) ONLY loads keys
-      #     literally named "filter1", "filter2", ... and breaks at the first
-      #     gap. Keys like "filter9b" are silently dropped. We must renumber
-      #     to keep filterN contiguous.
+      #    The variance layer (from elevation_mapping_cupy Kalman filter) captures
+      #    this: after a few consistent sensor updates, a stable floor cell has
+      #    variance ≈ 0.001–0.1 m²; a specular cell with inconsistent z returns
+      #    retains high variance (σ > sensor_noise_factor).
+      #
+      #    Fix: zero step_cost where variance > 2.0 m² (above "converged noise"
+      #    ~0.01 m², below "freshly initialized" initial_variance=1000 m²).
+      #    Specular cells → step_cost zeroed → traversable.
+      #    Converged walls → variance low → step_cost untouched → lethal correct.
+      #    Wall_cost path is NOT gated (walls have strong consistent returns →
+      #    low variance → unaffected; this gate only helps specular-floor lethals).
+      #    2026-05-22: implemented after observing scattered red specular lethals
+      #    on the ops2 corridor floor.
+      # 8. Variance confidence gate on step_cost.
+      #    Specular LiDAR returns off shiny floors create single-cell elevation
+      #    outliers. On flat floor (slope≈0): step_residual ≈ step_height, so
+      #    one outlier at z=floor+0.25m → step_cost=1.25 → trav_eth=0 → lethal.
+      #
+      #    EigenLab does NOT support comparison operators (<, >) or clamp().
+      #    Workaround: multiply step_cost by `(2.0 - variance) / 2.0`.
+      #    For high variance (specular, variance >> 2):
+      #      gate ≈ (2-1000)/2 = -499 → step_cost very negative
+      #      → (1 - step_cost) in trav_eth = 1+499 = 500 >> 1 → clamped to 1
+      #      → trav_eth = 1.0 (traversable) ✓
+      #    For converged floor (variance ≈ 0.001):
+      #      gate ≈ 1.0 → step_cost unchanged ✓
+      #    This gate applies to BOTH step_cost and wall_seed (filter10) so that
+      #    specular outliers don't create false lethal wall cells either.
       filter8:
+        name: step_cost_variance_gate
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: step_cost
+          expression: step_cost .* (2.0 - variance) / 2.0
+
+      # 9. wall_seed: raw step_height in excess of 0.25 m. This is the
+      #    "unambiguous vertical structure" detector. On any slope at our
+      #    0.10 m resolution + σ=0.02 m noise, step_height is bounded by
+      #    ~0.10 m, so wall_seed ≤ 0 -> clamped to 0. Only true walls /
+      #    cliffs (step_height ≈ wall_full_height ≈ 1 m at the rim) survive.
+      #    Decoupling this from step_residual prevents ramp noise from
+      #    producing false-positive lethal cells after dilation below.
+      #
+      #    NOTE: filters::FilterChain (filter_chain.hpp:117) ONLY loads keys
+      #    literally named "filter1", "filter2", ... and breaks at the first
+      #    gap. Keys like "filter9b" are silently dropped. We must renumber
+      #    to keep filterN contiguous.
+      filter9:
         name: wall_seed_raw
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: wall_seed
           expression: step_height - 0.25
 
-      filter9:
+      # 10. Variance gate on wall_seed — same logic as filter8.
+      #     Without this, a specular outlier with step_height > 0.25m would
+      #     generate non-zero wall_seed → wall_cost → lethal even after
+      #     step_cost is suppressed. The downstream filter11 (wall_seed_clamp_lo)
+      #     handles the clamping of the now-negative values back to zero.
+      filter10:
+        name: wall_seed_variance_gate
+        type: gridMapFilters/MathExpressionFilter
+        params:
+          output_layer: wall_seed
+          expression: wall_seed .* (2.0 - variance) / 2.0
+
+      filter11:
         name: wall_seed_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -144,7 +206,7 @@
       #     top interior reading free is harmless behind the lethal rim) but
       #     frees 0.10 m/side back into the corridor. consider_footprint +
       #     Nav2 inflation remain the actual clearance guards.
-      filter10:
+      filter12:
         name: wall_cost_dilated
         type: gridMapFilters/SlidingWindowMathExpressionFilter
         params:
@@ -159,7 +221,7 @@
       #     saturates the cost to 1.0 (hard veto). Smaller values map linearly.
       #     Output to a new layer (not the dilation source) to avoid the
       #     MathExpressionFilter setShared() aliasing pitfall.
-      filter11:
+      filter13:
         name: wall_cost_norm
         type: gridMapFilters/MathExpressionFilter
         params:
@@ -174,7 +236,7 @@
       # with fixed_grid sticky cells in grid_map_to_occupancy_grid,
       # those false lethals never clear. The speckled-purple trav grid
       # from 2026-05-20 was caused by removing this clamp.
-      filter12:
+      filter14:
         name: wall_cost_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:
@@ -182,7 +244,7 @@
           upper_threshold: 1.0
           set_to: 1.0
 
-      # 13. trav_eth: multiplicative model — product of (1 - cost_i) over
+      # 14. trav_eth: multiplicative model — product of (1 - cost_i) over
       #    slope, roughness, residual-step (cliff veto), and wall (vertical
       #    structure veto). Any cost=1 → trav_eth=0. ThresholdFilters below
       #    clamp to [0,1] for costs that exceed 1.0.
@@ -193,15 +255,15 @@
       #    CRITICAL: use .* (MATLAB element-wise product) not * (matrix multiply).
       #    EigenLab follows MATLAB semantics: A*B = matrix mul → all-NaN for
       #    sparse grids; A.*B = element-wise → correct per-cell traversability.
-      filter13:
+      filter15:
         name: trav_eth
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: trav_eth
           expression: (1.0 - slope_cost) .* (1.0 - step_cost) .* (1.0 - wall_cost)
 
-      # 14. Final clamp safety net.
-      filter14:
+      # 15. Final clamp safety net.
+      filter16:
         name: trav_eth_clamp_lo
         type: gridMapFilters/ThresholdFilter
         params:
@@ -209,7 +271,7 @@
           lower_threshold: 0.0
           set_to: 0.0
 
-      filter15:
+      filter17:
         name: trav_eth_clamp_hi
         type: gridMapFilters/ThresholdFilter
         params:
@@ -234,8 +296,7 @@
       # This keeps smooth ramps traversable without marking shallow transition
       # zones or platform tops as confidently free.
 
-      # slope_floor_margin = clamp((slope - 8deg) / (12deg - 8deg), 0, 1).
-      filter16:
+      filter18:
         name: trav_fused_alias
         type: gridMapFilters/MathExpressionFilter
         params:
