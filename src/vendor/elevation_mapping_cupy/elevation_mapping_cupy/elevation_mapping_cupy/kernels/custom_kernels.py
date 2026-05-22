@@ -19,7 +19,9 @@ def map_utils(
 ):
     util_preamble = string.Template(
         """
-        #include <cupy/carray.cuh>
+        // NVRTC 580+: carray.cuh only forward-declares `class float16` (incomplete).
+        // Include the full definition so casts / value-type uses compile.
+        #include <cupy/float16.cuh>
 
         __device__ float16 clamp(float16 x, float16 min_x, float16 max_x) {
 
@@ -132,10 +134,7 @@ def map_utils(
         ramped_height_range_b=ramped_height_range_b,
         ramped_height_range_c=ramped_height_range_c,
     )
-    # NVRTC 580+ no longer resolves cupy's forward `class float16;` to a full
-    # definition in ElementwiseKernel preambles; replace with plain float (all
-    # uses here are spatial coords, not half-precision).
-    return util_preamble.replace("float16", "float")
+    return util_preamble
 
 
 def add_points_kernel(
