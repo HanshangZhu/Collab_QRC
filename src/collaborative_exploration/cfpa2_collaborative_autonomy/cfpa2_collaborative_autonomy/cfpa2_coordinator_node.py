@@ -333,6 +333,7 @@ class CFPA2Coordinator(Node):
         # K=5 → 120 permutations, brute force in microseconds. K too large
         # would pull in far/low-utility frontiers that drag the tour out of
         # position.
+        self.declare_parameter("cfpa2_planner_mode", "greedy")
         self.declare_parameter("cfpa2_tsp_k", 5)
         # Stranded-frontier abort radius: if NO current frontier candidate is
         # within this distance of the held goal, the held goal is declared
@@ -521,6 +522,12 @@ class CFPA2Coordinator(Node):
             1.0, float(self.get_parameter("cfpa2_challenger_improvement_factor").value))
         self.cfpa2_challenger_min_lock_age_sec = max(
             0.0, float(self.get_parameter("cfpa2_challenger_min_lock_age_sec").value))
+        _planner_mode = str(self.get_parameter("cfpa2_planner_mode").value).strip().lower()
+        if _planner_mode not in ("greedy", "tsp_topk"):
+            self.get_logger().warn(
+                f"cfpa2_planner_mode='{_planner_mode}' invalid, falling back to 'greedy'")
+            _planner_mode = "greedy"
+        self.cfpa2_planner_mode = _planner_mode
         self.cfpa2_stale_frontier_radius_m = max(
             0.05, float(self.get_parameter("cfpa2_stale_frontier_radius_m").value))
         self.cfpa2_tsp_k = max(1, int(self.get_parameter("cfpa2_tsp_k").value))

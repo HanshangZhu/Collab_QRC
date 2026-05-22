@@ -21,6 +21,9 @@
     cfpa2_challenger_streak_required: 3
     cfpa2_challenger_improvement_factor: 1.20
     cfpa2_challenger_min_lock_age_sec: 2.0
+    # Formal benchmark uses the current CFPA2 greedy fallback unless an
+    # experiment explicitly switches to tsp_topk.
+    cfpa2_planner_mode: greedy
     switch_hysteresis: 0.50
     switch_min_dist: 0.80
     min_assign_distance: 0.30

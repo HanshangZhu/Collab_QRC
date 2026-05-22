@@ -5,6 +5,7 @@
 //
 //   /livox/lidar (livox_ros_driver2/CustomMsg) --> UDP nx_ip:lidar_port
 //   /livox/imu   (sensor_msgs/Imu)             --> UDP nx_ip:imu_port
+//   /goal_pose    (geometry_msgs/PoseStamped)   --> UDP nx_ip:goal_port
 //
 // Each callback converts the native ROS 2 msg to a POD struct (udp_protocol.hpp),
 // serializes it, and hands it to a UdpSender which fragments + emits datagrams.
@@ -15,6 +16,7 @@
 #include <string>
 
 #include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "hil_udp_relay/udp_protocol.hpp"
 #include "hil_udp_relay/udp_transport.hpp"
 #include "livox_ros_driver2/msg/custom_msg.hpp"
@@ -29,6 +31,7 @@ class HilRelayTxNode : public rclcpp::Node {
     nx_ip_ = declare_parameter<std::string>("nx_ip", "192.168.123.18");
     const int lidar_port = declare_parameter<int>("lidar_port", 9001);
     const int imu_port = declare_parameter<int>("imu_port", 9002);
+    const int goal_port = declare_parameter<int>("goal_port", 9007);
 
     if (!lidar_tx_.open(nx_ip_, static_cast<uint16_t>(lidar_port))) {
       RCLCPP_FATAL(get_logger(), "lidar UDP sender open failed to %s:%d",
@@ -37,6 +40,10 @@ class HilRelayTxNode : public rclcpp::Node {
     if (!imu_tx_.open(nx_ip_, static_cast<uint16_t>(imu_port))) {
       RCLCPP_FATAL(get_logger(), "imu UDP sender open failed to %s:%d",
                    nx_ip_.c_str(), imu_port);
+    }
+    if (!goal_tx_.open(nx_ip_, static_cast<uint16_t>(goal_port))) {
+      RCLCPP_FATAL(get_logger(), "goal UDP sender open failed to %s:%d",
+                   nx_ip_.c_str(), goal_port);
     }
 
     // Sensor-data QoS (best-effort) matches typical Livox/IMU publishers.
@@ -47,10 +54,14 @@ class HilRelayTxNode : public rclcpp::Node {
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(
         "/livox/imu", qos,
         std::bind(&HilRelayTxNode::onImu, this, std::placeholders::_1));
+    goal_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
+        "/goal_pose", rclcpp::QoS(10),
+        std::bind(&HilRelayTxNode::onGoal, this, std::placeholders::_1));
 
     RCLCPP_INFO(get_logger(),
-                "HIL TX up: /livox/lidar -> %s:%d, /livox/imu -> %s:%d",
-                nx_ip_.c_str(), lidar_port, nx_ip_.c_str(), imu_port);
+                "HIL TX up: /livox/lidar -> %s:%d, /livox/imu -> %s:%d, /goal_pose -> %s:%d",
+                nx_ip_.c_str(), lidar_port, nx_ip_.c_str(), imu_port,
+                nx_ip_.c_str(), goal_port);
   }
 
  private:
@@ -104,11 +115,31 @@ class HilRelayTxNode : public rclcpp::Node {
     imu_tx_.send(MSG_IMU, payload);
   }
 
+  void onGoal(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+    PoseStamped m;
+    m.header.stamp_sec = msg->header.stamp.sec;
+    m.header.stamp_nsec = msg->header.stamp.nanosec;
+    m.header.frame_id = msg->header.frame_id.empty() ? "map" : msg->header.frame_id;
+    m.position[0] = msg->pose.position.x;
+    m.position[1] = msg->pose.position.y;
+    m.position[2] = msg->pose.position.z;
+    m.orientation[0] = msg->pose.orientation.x;
+    m.orientation[1] = msg->pose.orientation.y;
+    m.orientation[2] = msg->pose.orientation.z;
+    m.orientation[3] = msg->pose.orientation.w;
+    std::vector<uint8_t> payload;
+    Writer w(payload);
+    serialize_posestamped(w, m);
+    goal_tx_.send(MSG_POSESTAMPED, payload);
+  }
+
   std::string nx_ip_;
   UdpSender lidar_tx_;
   UdpSender imu_tx_;
+  UdpSender goal_tx_;
   rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr lidar_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
 };
 
 }  // namespace hil_udp_relay
