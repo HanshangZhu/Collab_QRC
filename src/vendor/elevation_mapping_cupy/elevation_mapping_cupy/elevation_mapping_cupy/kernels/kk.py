@@ -389,6 +389,10 @@ def map_utils(
 ):
     util_preamble = string.Template(
         """
+        #ifndef float16
+        typedef float float16;
+        #endif
+
         __device__ float16 clamp(float16 x, float16 min_x, float16 max_x) {
 
             return max(min(x, max_x), min_x);
