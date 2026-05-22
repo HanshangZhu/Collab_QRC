@@ -20,13 +20,19 @@
                     Copy weights_ops2_tiled.dat here for ops2-tuned inference.
       free_thresh   OccupancyGrid free threshold (default 0.60)
       lethal_thresh OccupancyGrid lethal threshold (default 0.30)
-      grid_cells    Side length of world-fixed OccupancyGrid (default 1000 = 100 m)
+      grid_cells    Side length of world-fixed OccupancyGrid.
+                    2026-05-22: 1000 → 2000 so that at the new 0.05 m trav
+                    resolution the world extent stays 100 m (2000 × 0.05).
+                    ⚠ 2000² = 4 M cells: CLAUDE.md recorded SmacHybrid 17 s
+                    plan timeouts at 2000² @ 0.10. SmacLattice differs, but
+                    validate global-plan latency on the Orin NX; drop to
+                    1600 (80 m) if plan time is too high for the corridor.
   -->
 
   <arg name="weight_file"   default=""/>
   <arg name="free_thresh"   default="0.60"/>
   <arg name="lethal_thresh" default="0.30"/>
-  <arg name="grid_cells"    default="1000"/>
+  <arg name="grid_cells"    default="2000"/>
 
   <!-- ── elevation_mapping_cupy ─────────────────────────────────────── -->
   <node pkg="trav_pipeline_ros1"

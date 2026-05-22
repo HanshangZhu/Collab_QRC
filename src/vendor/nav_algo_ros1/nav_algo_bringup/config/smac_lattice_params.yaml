@@ -17,21 +17,21 @@ SmacLatticePlannerROS:
   # under nav_algo_smac_ros1/sample_primitives/.
   lattice_filepath: ""   # empty → wrapper defaults to package share path
 
-  # Penalties — match Nav2 yaml (SmacPlannerHybrid section, REEDS_SHEPP
-  # search). For SE2 Lattice you can switch reverse_penalty higher to
-  # discourage reverse arcs if the lattice file includes them.
-  reverse_penalty:              2.0
-  change_penalty:               0.0
-  non_straight_penalty:         1.20
-  cost_penalty:                 3.5
+  # Penalties — aligned BYTE-FOR-BYTE to the GOLD Nav2 SE2 overlay
+  # (nav2_se2_holonomic_overlay_sim.yaml, SmacPlannerLattice block), NOT the
+  # old Hybrid/REEDS_SHEPP values. This is what makes ROS1 global paths
+  # math-equivalent to the tuned Nav2-CUDA SE2 stack (2026-05-22).
+  reverse_penalty:              8.0
+  change_penalty:               1.0
+  non_straight_penalty:         1.30
+  cost_penalty:                 3.0
   retrospective_penalty:        0.015
-  rotation_penalty:             5.0
+  rotation_penalty:             1.50
   analytic_expansion_ratio:     3.5
   analytic_expansion_max_length: 3.0
 
-  # Diff primitives include forward + backward arcs from the JSON; whether
-  # reverse expansion is allowed in the analytic step is controlled here.
-  allow_reverse_expansion:      false
+  # Gold SE2 overlay sets allow_reverse_expansion: true.
+  allow_reverse_expansion:      true
 
   smoother:
     max_iterations:             1000

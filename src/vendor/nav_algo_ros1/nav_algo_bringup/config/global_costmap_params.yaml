@@ -4,10 +4,12 @@ global_costmap:
   update_frequency: 1.0
   publish_frequency: 1.0
   rolling_window: false
-  # Match the world-fixed 200×200 m grid Nav2 sim uses (trav grid origin
-  # at -100, -100 / 0.10 m cells). The static_layer pulls width/height
-  # from the incoming map message; these are fallbacks for first-tick.
-  width: 200.0
-  height: 200.0
-  resolution: 0.10
+  # The static_layer pulls width/height/resolution from the incoming
+  # /traversability_grid message; these are first-tick fallbacks only.
+  # Resolution is therefore driven by the trav grid (elevation_mapping
+  # resolution) — set to 0.05 there to truly take effect. GOLD Nav2 Go2
+  # global_costmap runs resolution 0.05.
+  width: 100.0
+  height: 100.0
+  resolution: 0.05
   always_send_full_costmap: true

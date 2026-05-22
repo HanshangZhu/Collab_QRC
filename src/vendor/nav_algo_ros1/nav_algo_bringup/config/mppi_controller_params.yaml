@@ -20,7 +20,7 @@ MPPIControllerROS:
   model_dt:                 0.05
   batch_size:               2000
   vx_std:                   0.20
-  vy_std:                   0.20
+  vy_std:                   0.0    # gold SE2 overlay zeroes vy noise (no strafe)
   wz_std:                   0.40
   vx_max:                   0.30
   vx_min:                  -0.10
@@ -67,7 +67,7 @@ MPPIControllerROS:
   GoalAngleCritic:
     enabled:              true
     cost_power:           1
-    cost_weight:          3.0
+    cost_weight:          2.5    # gold SE2 overlay override (was 3.0 in Go2 base)
     threshold_to_consider: 0.5
 
   PreferForwardCritic:
@@ -108,3 +108,5 @@ MPPIControllerROS:
     cost_power:           1
     cost_weight:          2.0
     offset_from_furthest: 4
+    threshold_to_consider: 0.5    # explicit (matches gold Go2 + CUDA default)
+    max_angle_to_furthest: 1.2    # explicit (matches gold Go2 + CUDA default)
