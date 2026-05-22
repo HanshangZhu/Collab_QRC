@@ -18,11 +18,16 @@
 map_frame: "map"
 base_frame: "body"
 
-# 60 × 60 m world-fixed window.  At 0.10 m resolution → 600 × 600 cells.
+# 60 × 60 m world-fixed window.  At 0.05 m resolution → 1200 × 1200 cells.
 # Note: elevation_mapping_cupy is ROBOT-CENTRIC (rolling window); the
 # world-fixed output grid is assembled by trav_filter_occ_grid.py.
+# 2026-05-22: resolution 0.10 → 0.05 to match GOLD Nav2 (costmap + 5cm
+# lattice). The trav grid resolution propagates to BOTH costmaps' static
+# layers, so this is the lever that makes the ROS1 costmap 0.05.
+# ⚠ COST: 4× elevation cells (360k → 1.44M) on the Orin NX — validate the
+# trav-grid rate stays ≥5 Hz on-bench before trusting it on the robot.
 map_length: 60.0
-resolution: 0.10
+resolution: 0.05
 
 # Height gate: accept points within 1.7 m above sensor.
 # Sensor sits at ~0.50 m above floor → gate cuts off at ~2.2 m world-z.
@@ -32,8 +37,8 @@ max_height_range: 1.7
 ramped_height_range_a: 0.5
 ramped_height_range_b: 1.7
 ramped_height_range_c: 0.2
-# Mid-360 blind zone: < 0.30 m in front of sensor → skip near-field noise.
-min_valid_distance: 0.30
+# Mid-360 blind zone: raised to 0.40 m (0.30 let in near-field leg returns).
+min_valid_distance: 0.40
 
 # Update rates
 map_acquire_fps: 5.0

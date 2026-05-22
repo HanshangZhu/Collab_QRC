@@ -131,3 +131,43 @@ build ros1_bridge from source on the NX with the livox msgs in the overlay.
   real rate — simplest, and fine since we measure real load) OR bridge `/clock`
   and set `use_sim_time` everywhere (more faithful but more wiring). **Plan:
   wall-clock** (sim emits at 10/200 Hz real-time; load numbers are real).
+
+## Dry-run results (2026-05-20) — VALIDATED end-to-end
+
+First full integrated HIL run: laptop MuJoCo (ops2-v4 handwalls scene) → fake
+Mid-360 → C++ UDP relay → Orin NX (Point-LIO + trav + move_base + CFPA2). The
+ros1_bridge dead-end (Foxy bad_alloc) was replaced by the UDP relay, which
+carries the CustomMsg stream cleanly.
+
+**Loop verified live (NX-side topic rates):**
+- `/livox/lidar` (laptop→NX over UDP, CustomMsg): ~9 Hz
+- `/robot/Odometry` (Point-LIO SLAM on NX): ~8.8 Hz
+- `/robot/traversability_grid` (elevation_mapping_cupy + filter): ~5 Hz
+- `/robot/way_point_coord` (CFPA2 frontier goals): 2 Hz
+
+**Dataset captured:** `/tmp/hil_dryrun_bag/hil_run.bag` — 59.7 s, 442 MB, 8681 msgs
+(530 lidar + 530 odom + 298 trav + 119 CFPA2 goals). Reusable HIL replay corpus.
+
+**NX HW load (steady-state HIL, live tegrastats):** CPU ~52% peak single-core,
+RAM 4.3 / 15.4 GB, GPU spikes to 90% (CUDA-MPPI kernels), 56–60 °C, ~12.6 W max.
+Enormous headroom — the full real-robot autonomy stack runs comfortably on the
+Orin NX driven by realistic simulated sensor load.
+
+**Asset gotcha:** the ops2-v4 scene needs `bags/meshes/ops2_cuda/` (the
+SLAM-reconstructed building mesh `scans_v4_sparse.obj` + `hfield/` + ~120
+`sonata/instances/meshes/*.obj`). These are gitignored (large); sync them
+machine-to-machine. The XML `file=` paths are `../../../../../../bags/...`
+(6 levels) which is CORRECT — MuJoCo resolves them relative to the XML's
+`meshdir` (`assets/go2_menagerie/`), 6 levels deep from the repo root. Do NOT
+"fix" the depth; the assets just need to be present.
+
+**Topic wiring gotcha:** the MuJoCo lidar plugin publishes on
+`/<ns>/mujoco_lidar_sensor/registered_scan` (BestEffort); a `qos_bridge`
+republishes it RELIABLE to `/<ns>/registered_scan_reliable`. pc2_to_livox must
+consume the **reliable** one (the laptop launcher wires this via HIL_SCAN_TOPIC).
+
+**Open / next:** cmd_vel-closes-the-loop (NX move_base → UDP → laptop MuJoCo →
+robot moves → odom changes → CFPA2 progresses) is wired but idle in this run —
+move_base needs the CFPA2 goal committed (same goal-forwarding/tuning nuance as
+the desktop standalone run). The sensing+compute+load half is fully proven; the
+actuation half is a follow-up tuning item, not a pipeline gap.

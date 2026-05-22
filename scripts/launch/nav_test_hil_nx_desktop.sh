@@ -97,14 +97,19 @@ ros2 launch go2_gazebo_sim single_go2w_mujoco_cfpa2.launch.py \
   "$@" &
 LAUNCH_PID=$!
 
-# 2) pc2_to_livox: MuJoCo registered_scan (PointCloud2) → /livox/lidar (CustomMsg).
-#    Wall-clock NOT sim-time on the OUTPUT side is fine; the converter copies the
-#    input header stamp. Run with use_sim_time so stamps match the sim clock.
+# 2) pc2_to_livox: MuJoCo lidar (PointCloud2) → /livox/lidar (CustomMsg).
+#    The MuJoCo lidar plugin publishes on /<ns>/mujoco_lidar_sensor/registered_scan
+#    (BestEffort); a qos_bridge republishes it RELIABLE to
+#    /<ns>/registered_scan_reliable. We consume the reliable one (matches our
+#    SensorDataQoS sub + survives the UDP relay path deterministically).
+#    Wall-clock vs sim-time: the converter copies the input header stamp; run with
+#    use_sim_time so stamps match the sim clock.
 sleep 6
-echo "  → starting pc2_to_livox (registered_scan → /livox/lidar)"
+SCAN_IN="${HIL_SCAN_TOPIC:-/${ROBOT_NS}/registered_scan_reliable}"
+echo "  → starting pc2_to_livox (${SCAN_IN} → /livox/lidar)"
 ros2 run pc2_to_livox pc2_to_livox_node --ros-args \
   -p use_sim_time:=true \
-  -p input_topic:=/${ROBOT_NS}/registered_scan \
+  -p input_topic:="${SCAN_IN}" \
   -p output_topic:=/livox/lidar \
   -p frame_id:=body &
 PC2_PID=$!

@@ -9,9 +9,11 @@ This work only concerns collaborative map exploration. The door/VLM task is out 
 
 The goal is to replace the current centralised CFPA2 frontier coordination with a peer-to-peer decentralised coordination layer. Each Go2 robot runs its own local exploration stack and peer coordination node, intended for deployment on Jetson Orin Nano hardware.
 
+Update 19/05/2026 - rewrote the package into C++ as discovered that Python is a bottleneck on Jetson.
+
 ## Reference
-RACER (Zhou et al., 2022) — arxiv 2209.08533
-M-TARE/TARE (Cao et al., 2021) - DOI:10.15607/RSS.2021.XVII.018
+- RACER (Zhou et al., 2022) — arxiv 2209.08533
+- M-TARE/TARE (Cao et al., 2021) - DOI:10.15607/RSS.2021.XVII.018
 
 ## Current centralisation (to verify) - DONE 30/04/2026
 - cfpa2_coordinator_node.py — single node sees both robots

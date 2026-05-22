@@ -58,6 +58,9 @@ enum MsgType : uint16_t {
   MSG_TWIST = 3,         // geometry_msgs/Twist
   MSG_ODOM = 4,          // nav_msgs/Odometry
   MSG_OCCGRID = 5,       // nav_msgs/OccupancyGrid
+  MSG_POINTSTAMPED = 6,  // geometry_msgs/PointStamped
+  MSG_POSESTAMPED = 7,   // geometry_msgs/PoseStamped
+  MSG_PATH = 8,          // nav_msgs/Path
 };
 
 // Packet header. PACKED so its on-wire size is exactly 24 bytes regardless of
@@ -142,6 +145,22 @@ struct OccupancyGrid {
   Header header;
   MapMetaData info;
   std::vector<int8_t> data;
+};
+
+struct PointStamped {
+  Header header;
+  double point[3] = {0, 0, 0};
+};
+
+struct PoseStamped {
+  Header header;
+  double position[3] = {0, 0, 0};
+  double orientation[4] = {0, 0, 0, 1};
+};
+
+struct Path {
+  Header header;
+  std::vector<PoseStamped> poses;
 };
 
 // ---------------------------------------------------------------------------
@@ -374,6 +393,55 @@ inline bool deserialize_occgrid(Reader& r, OccupancyGrid& m) {
   if (!r.ok()) return false;
   m.data.resize(n);
   if (n > 0) r.bytes(m.data.data(), n);
+  return r.ok();
+}
+
+// --- PointStamped ---
+inline void serialize_pointstamped(Writer& w, const PointStamped& m) {
+  serialize_header(w, m.header);
+  for (int i = 0; i < 3; ++i) w.f64(m.point[i]);
+}
+
+inline bool deserialize_pointstamped(Reader& r, PointStamped& m) {
+  deserialize_header(r, m.header);
+  for (int i = 0; i < 3; ++i) m.point[i] = r.f64();
+  return r.ok();
+}
+
+// --- PoseStamped ---
+inline void serialize_posestamped(Writer& w, const PoseStamped& m) {
+  serialize_header(w, m.header);
+  for (int i = 0; i < 3; ++i) w.f64(m.position[i]);
+  for (int i = 0; i < 4; ++i) w.f64(m.orientation[i]);
+}
+
+inline bool deserialize_posestamped(Reader& r, PoseStamped& m) {
+  deserialize_header(r, m.header);
+  for (int i = 0; i < 3; ++i) m.position[i] = r.f64();
+  for (int i = 0; i < 4; ++i) m.orientation[i] = r.f64();
+  return r.ok();
+}
+
+// --- Path ---
+inline void serialize_path(Writer& w, const Path& m) {
+  serialize_header(w, m.header);
+  w.u32(static_cast<uint32_t>(m.poses.size()));
+  for (const auto& pose : m.poses) {
+    serialize_posestamped(w, pose);
+  }
+}
+
+inline bool deserialize_path(Reader& r, Path& m) {
+  deserialize_header(r, m.header);
+  uint32_t n = r.u32();
+  if (!r.ok()) return false;
+  m.poses.clear();
+  m.poses.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    PoseStamped pose;
+    if (!deserialize_posestamped(r, pose)) return false;
+    m.poses.push_back(pose);
+  }
   return r.ok();
 }
 

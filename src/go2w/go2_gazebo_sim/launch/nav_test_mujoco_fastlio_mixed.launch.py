@@ -468,7 +468,24 @@ def _build_mtare_common_executor_actions(
     else:
         mtare_setup = os.path.join(_ws_root, "src/vendor/tare_planner/install/setup.bash")
         mtare_config = os.path.join(_ws_root, "scripts/sim/mtare_common_executor/collab_qrc_indoor.yaml")
-        if os.path.exists(mtare_setup) and os.path.exists(mtare_config):
+        mtare_executable_candidates = [
+            os.path.join(
+                _ws_root, "src/vendor/tare_planner/install/tare_planner/lib",
+                "tare_planner", "tare_planner_node",
+            ),
+            os.path.join(
+                _ws_root, "src/vendor/tare_planner/install/lib",
+                "tare_planner", "tare_planner_node",
+            ),
+        ]
+        mtare_executable = next(
+            (
+                path for path in mtare_executable_candidates
+                if os.path.isfile(path) and os.access(path, os.X_OK)
+            ),
+            "",
+        )
+        if os.path.exists(mtare_setup) and os.path.exists(mtare_config) and mtare_executable:
             for robot_id, ns in enumerate(("robot_a", "robot_b")):
                 ros_args = [
                     "--ros-args",
@@ -496,7 +513,7 @@ def _build_mtare_common_executor_actions(
                 ]
                 cmd = (
                     f"source {shlex.quote(mtare_setup)} && "
-                    f"exec ros2 run tare_planner tare_planner_node "
+                    f"exec {shlex.quote(mtare_executable)} "
                     + " ".join(shlex.quote(arg) for arg in ros_args)
                 )
                 actions.append(TimerAction(
@@ -534,7 +551,7 @@ def _build_mtare_common_executor_actions(
                         output="screen",
                     ),
                     LogInfo(msg=(
-                        "[mtare fallback] Vendor TARE install was not found; "
+                        "[mtare fallback] Vendor TARE executable was not found; "
                         "started local autonomous frontier allocator instead. "
                         "Build src/vendor/tare_planner for the replicated TARE planner."
                     )),
@@ -1180,7 +1197,17 @@ def _build_fastlio_nav_stack(
         # the global planner to SmacPlannerLattice (with diff primitives)
         # and biases MPPI toward yaw-align + forward motion (no strafe).
         # See nav2_se2_holonomic_overlay_sim.yaml for the deltas.
-        nav2_params = [rewritten_nav2]
+        cpu_mppi_overlay_path = os.path.join(
+            go2w_config_pkg, "config", "nav",
+            "nav2_cpu_mppi_overlay_sim.yaml",
+        )
+        cpu_mppi_overlay = RewrittenYaml(
+            source_file=cpu_mppi_overlay_path,
+            root_key=ns,
+            param_rewrites={"use_sim_time": str(use_sim_time).lower()},
+            convert_types=True,
+        )
+        nav2_params = [rewritten_nav2, cpu_mppi_overlay]
         if holonomic_profile == "se2_holonomic":
             overlay_path = os.path.join(
                 go2w_config_pkg, "config", "nav",
@@ -2244,30 +2271,14 @@ def _launch_setup(context):
                                 "use_sim_time": use_sim_time,
                                 "namespaces": ["robot_a", "robot_b"],
                                 "goal_topic_suffix": "/way_point_coord",
+                                "planning_map_topic_suffix": "/map",
                                 "marker_frame_override": "map",
                                 # ── Shared-map frontier extraction ──
-                                # Without this, CFPA2 extracts frontiers
-                                # from EACH robot's /{ns}/map independently
-                                # and dedupes targets only by spatial
-                                # nearness. A cell that's "free with
-                                # unknown neighbour" in B's small local
-                                # map can be FREE-ALL-AROUND in A's
-                                # already-explored region — but B's-side
-                                # extraction marks it a frontier and
-                                # _merge_targets keeps it. Result: B
-                                # gets dispatched to a "frontier" that's
-                                # actually known free space from A's
-                                # perspective, wasting time + LiDAR.
-                                #
-                                # multirobot_map_merge publishes the union
-                                # at /merged_map. Pointing CFPA2 at it
-                                # makes "frontier" mean "boundary between
-                                # the swarm's combined known region and
-                                # genuinely-unknown space" — the correct
-                                # definition. CFPA2 fails-open to per-ns
-                                # for the first ~30 s while map_merge
-                                # bootstraps GT init poses, then auto-
-                                # switches once the merged map arrives.
+                                # C++ CFPA2 consumes planning_map_topic_suffix,
+                                # so use /<ns>/map. map_augmenter publishes
+                                # that topic from each local map plus /merged_map,
+                                # giving CFPA2 shared swarm coverage without
+                                # waiting on Nav2 global_costmap publications.
                                 "use_shared_map": True,
                                 "shared_map_topic": "/merged_map",
                                 "shared_map_wait_sec": 35.0,
