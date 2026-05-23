@@ -82,6 +82,7 @@ def stamp_free_disk(
     radius_m: float,
     free_value: int = 0,
     max_clear_cost: int = 50,
+    unknown_only: bool = False,
 ) -> int:
     """Mark a bounded robot-footprint disk free without clearing obstacles.
 
@@ -89,6 +90,15 @@ def stamp_free_disk(
     only clears unknown cells and already-traversable/intermediate cells; costs
     above ``max_clear_cost`` are treated as obstacle evidence and left intact.
     Returns the number of cells changed to ``free_value``.
+
+    When ``unknown_only`` is True, ONLY unknown cells (cost < 0) are cleared and
+    every cell that carries a measurement (cost >= 0, wall or floor) is left at
+    its observed value, regardless of ``max_clear_cost``. This fills the
+    geometric blind cone (unseen ground the robot is standing on) without
+    erasing near walls the sensor *can* see (Mid-360 with -15 deg tilt: empty
+    return hole ~0.43 m, but flat ground first returns ~1.25 m; walls return
+    from ~0.43 m). A plain free-disk out to the ground blind cone would wipe
+    those scannable near walls; unknown_only does not.
     """
 
     if radius_m <= 0.0 or resolution <= 0.0:

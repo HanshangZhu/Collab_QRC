@@ -596,8 +596,14 @@ class GridMapToOccupancyGrid(Node):
                 radius_m=self.robot_core_clear_radius_m,
                 max_clear_cost=101,
             )
-        # Tier 2: outer seed — conditional (only unknown / ≤ max_clear_cost), so
-        # the blind disk below the sensor reads free without erasing real walls.
+        # Tier 2: outer seed — UNKNOWN-ONLY. Fills the geometric ground blind
+        # cone (unseen floor the robot stands on, cost=-1) but leaves every
+        # scanned cell at its measured value. The Mid-360 (-15 deg tilt) sees
+        # near walls from ~0.43 m even though flat ground first returns ~1.25 m,
+        # so a plain free-disk out to the blind-cone radius would erase those
+        # scannable near walls. unknown_only keeps them. radius is sized to the
+        # measured ground blind cone (~1.25 m) + margin so genuinely-unexplored
+        # unknown beyond the robot isn't falsely cleared free.
         changed = stamp_free_disk(
             cost,
             origin_x=float(occ.info.origin.position.x),
@@ -607,6 +613,7 @@ class GridMapToOccupancyGrid(Node):
             center_y=cy,
             radius_m=self.robot_seed_radius_m,
             max_clear_cost=self.seed_max_clear_cost,
+            unknown_only=True,
         )
         changed += core_changed
         if changed > 0:

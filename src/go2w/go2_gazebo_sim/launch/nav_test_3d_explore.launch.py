@@ -71,18 +71,21 @@ def generate_launch_description() -> LaunchDescription:
                         "RViz 'Nav2 Goal' (publishes /robot/goal_pose)."),
         DeclareLaunchArgument(
             "robot_seed_radius_m",
-            default_value=PythonExpression([
-                "'3.5' if '", LaunchConfiguration("explore"), "' == 'false' else '3.5'"
-            ]),
-            description="Forced-free disk radius (m) seeded around the robot in "
-                        "/robot/traversability_grid every frame (CONDITIONAL: "
-                        "clears unknown / cost<=seed_max_clear_cost, never lethal). "
-                        "MUST cover the Mid-360 geometric blind disk (~3.25 m: "
-                        "V-FOV starts ~-7deg → ground first visible ~3 m out). "
-                        "Below that, the robot's tiny seed bubble is isolated "
-                        "from the sensed-free ring by the unknown blind ring → "
-                        "BFS (allow_unknown=false) can't cross → robot trapped "
-                        "at spawn, CFPA2 finds no reachable frontier (2026-05-20)."),
+            default_value="1.4",
+            description="UNKNOWN-ONLY forced-free disk radius (m) seeded around "
+                        "the robot in /robot/traversability_grid every frame. "
+                        "Fills ONLY unknown cells (unseen ground); scanned cells "
+                        "(walls) are left untouched (see stamp_free_disk "
+                        "unknown_only). Sized to the MEASURED ground blind cone: "
+                        "with the -15deg Mid-360 tilt applied, flat ground first "
+                        "returns at ~1.25 m (empty return hole is only ~0.43 m; "
+                        "near walls return from ~0.43 m). 1.4 m = blind cone + "
+                        "margin so the spawn free-bubble connects to the sensed "
+                        "ground ring (BFS allow_unknown=false can cross) WITHOUT "
+                        "falsely clearing genuinely-unexplored unknown beyond the "
+                        "robot. Was 3.5 m (sized for the UNTILTED -7deg blind "
+                        "cone ~3.25 m, which ignored the tilt and erased near "
+                        "walls). Measured 2026-05-23."),
         DeclareLaunchArgument(
             "upper_bound_clearance", default_value="true",
             description="Enable Miki et al. 2022 Sec. II-H upper_bound overhang "
