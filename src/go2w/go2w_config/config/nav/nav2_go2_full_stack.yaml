@@ -8,7 +8,7 @@
 #     MuJoCo contact validation shows the walking thigh/calf sweep needs
 #     the same lateral envelope at obstacle corners. Half-extents
 #     (0.35, 0.20).
-#   - vx_max  0.50 → 0.30 m/s     — CHAMP walking-gait stable cap
+#   - vx_max  0.30 → 0.40 m/s     — modest bump; 1.20 tipped the robot (gait unstable >~0.5)
 #   - vx_min -0.20 → -0.10 m/s    — Go2 reverses but slow
 #   - wz_max  1.0  → 0.8  rad/s   — pivot a bit gentler than wheels
 #   - ax_max  0.5  → 0.30 m/s²    — softer accel for walking
@@ -209,14 +209,14 @@ controller_server:
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
-      vx_std: 0.20
+      vx_std: 0.20       # rolled back from 0.60 after tip-over (aggressive sampling + high cap = unstable lurch)
       vy_std: 0.20
       wz_std: 0.40
-      vx_max: 0.30       # CHAMP walking-gait stable cap (vs Go2W's 0.50)
+      vx_max: 0.40       # rolled back from 1.20 after tip-over; CHAMP walking gait unstable above ~0.5 m/s
       vx_min: -0.10      # Go2 reverses but slow (vs Go2W's -0.20)
       vy_max: 0.0        # diff-drive — no strafe in routing layer
       wz_max: 0.8        # gentler pivot than Go2W's 1.0
-      ax_max: 0.30       # softer accel for walking (vs Go2W's 0.50)
+      ax_max: 0.30       # soft accel for walking stability (was 0.60 — contributed to tip-over)
       ax_min: -0.40
       ay_max: 0.0
       az_max: 1.0

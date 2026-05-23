@@ -301,4 +301,9 @@
         type: gridMapFilters/MathExpressionFilter
         params:
           output_layer: trav_fused
-          expression: trav_eth
+          # A/B 2026-05-23: test the ETH CNN (less conservative — 29% vs 61%
+          # below 0.3 on live ops2). ops2 is a flat corridor (no ramp), so pure
+          # CNN is enough for this test; the designed fusion is
+          # max(traversability, ramp_safe) once ramp_safe is re-added.
+          # expression: trav_eth          # analytical-only (slope*step*wall product)
+          expression: traversability      # pure CNN
