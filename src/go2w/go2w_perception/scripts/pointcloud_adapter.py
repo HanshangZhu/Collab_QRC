@@ -52,10 +52,16 @@ class PointCloudAdapter(Node):
             PointCloud2, input_topic, self.callback, qos_sub
         )
 
-        # Publish with Reliable (what FAST-LIO expects)
+        # Publish with BEST_EFFORT (standard sensor-data QoS). Both consumers
+        # (FAST-LIO's rclcpp::SensorDataQoS, elevation_mapping's sensor_data
+        # preset) subscribe BEST_EFFORT, so RELIABLE here was a pure mismatch.
+        # RELIABLE is harmless on a local (standalone) link but cross-host the
+        # synchronous RELIABLE writer blocks/queues on the 560 KB fragmented
+        # cloud send -> 1-5 s variable latency -> FAST-LIO lidar<->IMU desync ->
+        # divergence. Shallow depth drops stale clouds instead of queuing them.
         qos_pub = QoSProfile(
-            depth=5,
-            reliability=ReliabilityPolicy.RELIABLE,
+            depth=2,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
         self.pub = self.create_publisher(PointCloud2, output_topic, qos_pub)

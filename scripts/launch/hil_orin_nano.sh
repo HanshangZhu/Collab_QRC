@@ -46,7 +46,7 @@ SSH() { sshpass -p "$JETSON_PASS" ssh "${SSH_OPTS[@]}" "${JETSON_USER}@${JETSON_
 # Process-name patterns. Note pkill matches on the FULL command line so
 # patterns that match a literal command must avoid matching the running
 # pkill/ssh command itself. We use pgrep + explicit kill instead.
-DESKTOP_PROCS='mujoco_ros2_control|ros2 launch go2_gazebo_sim single_go2w_mujoco_cfpa2|rviz2_single_go2w|champ|robot_state_publisher|pointcloud_adapter|exploration_metrics_logger|ekf_node|spawn|stand_up_slowly|wall_collision_checker|autonomy_enabler|supervisor_panic_node|qos_bridge|twist_bridge|pointcloud_to_laserscan_node|wait_for_ready|nav_test_hil_desktop'
+DESKTOP_PROCS='mujoco_ros2_control|ros2 launch go2_gazebo_sim single_go2w_mujoco_cfpa2|nav_test_hil_desktop|rviz2_single_go2w|champ|robot_state_publisher|pointcloud_adapter|exploration_metrics_logger|ekf_node|spawn|stand_up_slowly|wall_collision_checker|autonomy_enabler|supervisor_panic_node|qos_bridge|twist_bridge|pointcloud_to_laserscan_node|wait_for_ready|wait_for_settle|hil_relay'
 JETSON_PROCS='fastlio_mapping|elevation_mapping_node|filter_chain_runner|controller_server|planner_server|behavior_server|bt_navigator|lifecycle_manager_navigation|fast_lio_tf_adapter|grid_map_to_occupancy|cfpa2_single_robot|cfpa2_to_nav2|path_relay|orin_nano_hil_jetson|run_jetson_hil|static_transform_publisher'
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -56,16 +56,26 @@ banner() { echo; echo "═══════════════════
 
 kill_desktop() {
   banner "Preflight kill — desktop"
-  local pids
-  pids=$(pgrep -f "${DESKTOP_PROCS}" 2>/dev/null | grep -v "^$$\$" || true)
-  if [[ -n "$pids" ]]; then
-    echo "  killing PIDs: $(echo $pids | tr '\n' ' ')"
-    kill -KILL $pids 2>/dev/null || true
-    sleep 2
-  fi
+  # Multi-pass (hardened 2026-05-23): a single pass left duplicate desktop sims
+  # + a stray hil_relay republishing /robot/velodyne_points, which fed Fast-LIO
+  # TWO interleaved cloud streams → SLAM divergence. Loop until clean. ros2
+  # launch roots first so they don't respawn children mid-kill.
+  local me=$$ pids
+  for pass in 1 2 3; do
+    pids=$(pgrep -f "ros2 launch|nav_test_hil_desktop|launch_service" 2>/dev/null | grep -vw "$me" || true)
+    [[ -n "$pids" ]] || break
+    kill -KILL $pids 2>/dev/null || true; sleep 2
+  done
+  for pass in 1 2 3 4; do
+    pids=$(pgrep -f "${DESKTOP_PROCS}" 2>/dev/null | grep -vw "$me" || true)
+    [[ -n "$pids" ]] || break
+    echo "  pass $pass killing: $(echo $pids | tr '\n' ' ')"
+    kill -KILL $pids 2>/dev/null || true; sleep 2
+  done
   rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* /dev/shm/cdds_* /dev/shm/iox_* 2>/dev/null
-  if pgrep -f "${DESKTOP_PROCS}" >/dev/null 2>&1; then
-    warn "some processes survived:"; pgrep -af "${DESKTOP_PROCS}" | head -5
+  pids=$(pgrep -f "${DESKTOP_PROCS}" 2>/dev/null | grep -vw "$me" || true)
+  if [[ -n "$pids" ]]; then
+    warn "some processes survived:"; pgrep -af "${DESKTOP_PROCS}" | grep -vw "$me" | head -5
   else
     ok "desktop clean"
   fi
@@ -89,7 +99,7 @@ kill_jetson() {
   local out
   out=$(SSH 'bash -s' <<'JEOF' 2>&1
 ROOTS='run_jetson_hil|ros2 launch|orin_nano_hil_jetson|launch_service'
-NODES='fastlio_mapping|fast_lio_tf_adapter|elevation_mapping_node|filter_chain_runner|controller_server|planner_server|behavior_server|bt_navigator|lifecycle_manager|grid_map_to_occupancy|cfpa2_single_robot|cfpa2_to_nav2|cfpa2_coordinator|path_relay|static_transform_publisher|robot_state_publisher|component_container|topic_tools'
+NODES='fastlio_mapping|fast_lio_tf_adapter|elevation_mapping_node|filter_chain_runner|controller_server|planner_server|behavior_server|bt_navigator|lifecycle_manager|grid_map_to_occupancy|cfpa2_single_robot|cfpa2_to_nav2|cfpa2_coordinator|path_relay|hil_relay|hil_udp_relay|static_transform_publisher|robot_state_publisher|component_container|topic_tools'
 me=$$
 # 1) Respawn roots first (else respawn=True brings nodes back).
 for p in 1 2 3; do

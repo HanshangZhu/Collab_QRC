@@ -79,6 +79,12 @@ namespace mujoco_ros2_sensors {
 
         mjData* mujoco_data_ = nullptr; ///< Pointer to the Mujoco data object representing the current state of the simulation.
 
+        // Last published MuJoCo sim time. The IMU runs on a wall_timer that can
+        // fire faster than the sim advances data_->time, so consecutive callbacks
+        // would otherwise emit duplicate (dt=0) stamps -> FAST-LIO "imu loop back"
+        // -> ESIKF divergence. We dedupe: only publish when sim time advanced.
+        double last_stamp_time_ = -1.0;
+
         ImuSensorStruct sensor_;
     };
 }

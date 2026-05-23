@@ -149,6 +149,7 @@ void LidarSensor::update()
     // All mjData reads and mj_multiRay must be protected from concurrent mj_step.
     double origin_copy[3];
     double xmat_copy[9];
+    double sim_time_capture = 0.0;
     std::vector<double> ray_dirs_world(n_rays_ * 3);
     std::vector<float> points;
     points.reserve(n_rays_ * 3);
@@ -174,6 +175,9 @@ void LidarSensor::update()
         // 1. Read site position and orientation from the live sim data.
         std::memcpy(origin_copy, data_->site_xpos + site_id_ * 3, 3 * sizeof(double));
         std::memcpy(xmat_copy, data_->site_xmat + site_id_ * 9, 9 * sizeof(double));
+        // Capture the exact MuJoCo sim time of THIS raycast (under the same lock)
+        // for the cloud stamp below — see the header.stamp note at publish.
+        sim_time_capture = data_->time;
 
         // 2. Rotate ray directions from local to world frame.
         for (int i = 0; i < n_rays_; ++i) {
@@ -242,7 +246,17 @@ void LidarSensor::update()
 
     // 5. Build PointCloud2 message.
     sensor_msgs::msg::PointCloud2 msg;
-    msg.header.stamp    = nh_->now();
+    // Stamp with the true MuJoCo sim time of the raycast (captured under the
+    // sim-step lock above), NOT nh_->now(). nh_->now() reads the node's /clock
+    // subscription, which lags + jitters under HIL load -> the cloud stamp drifts
+    // 1-2 s behind the actual /clock and is inconsistent with the IMU and the
+    // GT/pose TF. That desyncs FAST-LIO's lidar<->IMU alignment and makes
+    // elevation_mapping's TF-at-cloud-stamp lookup throw ExtrapolationException
+    // (-> trav_grid never builds). mujoco_data_->time is exact and matches the
+    // published /clock, so all sim sensors share one consistent time base.
+    msg.header.stamp.sec     = static_cast<int32_t>(std::floor(sim_time_capture));
+    msg.header.stamp.nanosec = static_cast<uint32_t>(
+        (sim_time_capture - std::floor(sim_time_capture)) * 1e9);
     msg.header.frame_id = frame_id_;
     msg.height          = 1;
     msg.width           = n_valid;
