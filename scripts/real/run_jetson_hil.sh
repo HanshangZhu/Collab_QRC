@@ -8,6 +8,13 @@
 # Usage on Jetson (after scripts/real/deploy_to_orin_nano.sh sync):
 #   bash /tmp/run_jetson_hil.sh
 unset RMW_IMPLEMENTATION CYCLONEDDS_URI
+# Match the desktop HIL FastDDS profile (UDP-only, SHM disabled). REQUIRED for
+# cross-host matching: without it the Jetson nodes use the default SHM-enabled
+# profile, and BEST_EFFORT subscribers (notably fast_lio's SensorDataQoS lidar
+# sub) fail to match the desktop's RELIABLE publishers cross-host → fast_lio
+# receives no cloud → no odometry → robot frozen. RELIABLE↔RELIABLE (IMU) still
+# matches, which masks the bug. Regression found + fixed 2026-05-23.
+export FASTRTPS_DEFAULT_PROFILES_FILE=/home/johnpork233/jetson_ws/config/fastdds_no_shm.xml
 export ROS_DOMAIN_ID=0
 export PATH=$HOME/.local/bin:/usr/local/cuda/bin:$PATH
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH

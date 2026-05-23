@@ -73,14 +73,51 @@ kill_desktop() {
 
 kill_jetson() {
   banner "Preflight kill — Jetson ($JETSON_HOST)"
-  # pgrep ... | grep -v $$ filters out the SSH bash itself
+  # Robust teardown (hardened 2026-05-23 after a respawn-zombie pileup).
+  # Three things the old one-shot version got wrong:
+  #   1. orin_nano_hil_jetson.launch.py runs respawn=True on some nodes, so
+  #      killing the nodes alone makes the LAUNCH resurrect them. We MUST kill
+  #      the launch ROOTS (run_jetson_hil.sh + `ros2 launch` + launch_service)
+  #      FIRST, then the nodes — and loop, because respawn_delay=3.0 races the
+  #      kill.
+  #   2. The verify used `pgrep -f '<patterns>'` INSIDE an SSH command whose
+  #      own argv contained those patterns, so pgrep false-matched the command
+  #      shell itself ("2-3 survivors of every node" that were never real).
+  #      Fix: pipe the whole teardown via STDIN to `bash -s`, so the patterns
+  #      live in stdin, never in any process argv → pgrep -f is reliable.
+  #   3. Single pass left survivors silently. Now: loop until clean + verify.
   local out
-  out=$(SSH "PIDS=\$(pgrep -f '${JETSON_PROCS}' 2>/dev/null | grep -v \$\$); \
-    if [ -n \"\$PIDS\" ]; then echo \"killing: \$PIDS\"; kill -KILL \$PIDS 2>/dev/null; sleep 2; fi; \
-    rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* /dev/shm/cdds_* /dev/shm/iox_* 2>/dev/null; \
-    if pgrep -f '${JETSON_PROCS}' >/dev/null 2>&1; then echo 'SURVIVORS:'; pgrep -af '${JETSON_PROCS}' | head -5; else echo CLEAN; fi" 2>&1)
-  echo "$out" | grep -v "^CLEAN$" | sed 's/^/  /'
-  if echo "$out" | grep -q "^CLEAN$"; then ok "jetson clean"; else warn "see survivors above"; fi
+  out=$(SSH 'bash -s' <<'JEOF' 2>&1
+ROOTS='run_jetson_hil|ros2 launch|orin_nano_hil_jetson|launch_service'
+NODES='fastlio_mapping|fast_lio_tf_adapter|elevation_mapping_node|filter_chain_runner|controller_server|planner_server|behavior_server|bt_navigator|lifecycle_manager|grid_map_to_occupancy|cfpa2_single_robot|cfpa2_to_nav2|cfpa2_coordinator|path_relay|static_transform_publisher|robot_state_publisher|component_container|topic_tools'
+me=$$
+# 1) Respawn roots first (else respawn=True brings nodes back).
+for p in 1 2 3; do
+  R=$(pgrep -f "$ROOTS" 2>/dev/null | grep -vw "$me")
+  [ -n "$R" ] || break
+  kill -KILL $R 2>/dev/null; sleep 3
+done
+# 2) Nodes (no respawn source now), several passes.
+for p in 1 2 3 4 5; do
+  N=$(pgrep -f "$NODES" 2>/dev/null | grep -vw "$me")
+  [ -n "$N" ] || break
+  kill -KILL $N 2>/dev/null; sleep 2
+done
+rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* /dev/shm/cdds_* /dev/shm/iox_* 2>/dev/null
+# 3) Verify (reliable: patterns are in stdin, not this shell's argv).
+LR=$(pgrep -f "$ROOTS" 2>/dev/null | grep -vw "$me")
+LN=$(pgrep -f "$NODES" 2>/dev/null | grep -vw "$me")
+if [ -z "$LR$LN" ]; then
+  echo CLEAN
+else
+  echo SURVIVORS
+  pgrep -af "$ROOTS" 2>/dev/null | grep -vw "$me" | head -4
+  pgrep -af "$NODES" 2>/dev/null | grep -vw "$me" | head -4
+fi
+JEOF
+)
+  echo "$out" | grep -v '^CLEAN$' | sed 's/^/  /'
+  if echo "$out" | grep -q '^CLEAN$'; then ok "jetson clean"; else warn "jetson NOT clean — survivors above; re-run '$0 stop'"; fi
 }
 
 start_desktop() {

@@ -125,6 +125,9 @@ rsync_to_jetson  src/nav2_mppi_controller_cuda_plugin                       src/
 echo ""
 echo "── configs ──"
 rsync_to_jetson  src/go2w/go2w_config/config/nav                              config/
+# FastDDS no-shm profile — Jetson nodes MUST use the same UDP-only profile as
+# the desktop or cross-host BEST_EFFORT subs (fast_lio lidar) won't match.
+rsync_to_jetson  config/fastdds_no_shm.xml                                    config/
 rsync_to_jetson  scripts/runtime/fast_lio_tf_adapter.py                       scripts/runtime/
 # Explore-mode runtime nodes (started by orin_nano_hil_jetson.launch.py when
 # explore:=true): CFPA2→Nav2 goal bridge + plan→planned_path relay for RViz.
