@@ -333,6 +333,12 @@ def _launch_setup(context):
                         {"pose_topic": "base_link_site_pose_sensor/pose"},
                         {"imu_topic": "imu_imu_sensor/imu"},
                         {"republish_imu_topic": "imu/data"},
+                        # Sim IMU low-pass (emulates real Mid-360 hardware filter).
+                        # The raw MuJoCo accel + CHAMP standing controller spike to
+                        # 4-23 m/s^2 on a still robot; fast_lio integrates that to
+                        # divergence. Set at LAUNCH (not live) so fast_lio inits
+                        # against a consistent IMU. Tune via SIM_IMU_LPF_HZ env.
+                        {"imu_lpf_cutoff_hz": float(os.environ.get("SIM_IMU_LPF_HZ", "5.0"))},
                     ],
                     remappings=[
                         ("/tf", f"/{robot_ns}/tf"),
@@ -820,15 +826,34 @@ def _launch_setup(context):
 
     # ── Wire readiness gate -> robot actions ──
     if robot_actions:
-        actions.append(wait_for_platform)
-        actions.append(
-            RegisterEventHandler(
-                OnProcessExit(
-                    target_action=wait_for_platform,
-                    on_exit=robot_actions,
+        if enable_assets and "stand_up_node" in stack_handles:
+            # Gate fast_lio (+ the rest of robot_actions) on stand-up COMPLETION
+            # plus a settle delay — NOT the early IMU-stable wait_for_platform
+            # gate. wait_for_platform starts at t~0 and fires during the
+            # lying-still-at-spawn phase (|w|~0 while lying down) BEFORE stand-up
+            # even begins, so fast_lio inits its gravity vector pre-stand-up and
+            # the stand-up leg motion then corrupts the estimate -> divergence
+            # (the "stand up FIRST, then fast_lio" requirement). stand_up_node is
+            # patched to block until the stand-up trajectory completes, so its
+            # exit == robot standing; +6 s covers the |w|<0.05 settle window.
+            actions.append(
+                RegisterEventHandler(
+                    OnProcessExit(
+                        target_action=stack_handles["stand_up_node"],
+                        on_exit=[TimerAction(period=6.0, actions=robot_actions)],
+                    )
                 )
             )
-        )
+        else:
+            actions.append(wait_for_platform)
+            actions.append(
+                RegisterEventHandler(
+                    OnProcessExit(
+                        target_action=wait_for_platform,
+                        on_exit=robot_actions,
+                    )
+                )
+            )
 
     return actions
 

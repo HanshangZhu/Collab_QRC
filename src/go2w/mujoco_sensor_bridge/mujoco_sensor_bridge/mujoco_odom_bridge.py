@@ -67,6 +67,18 @@ class MujocoOdomBridge(Node):
         republish_imu = self.get_parameter('republish_imu_topic').get_parameter_value().string_value
         self._publish_tf = self.get_parameter('publish_tf').get_parameter_value().bool_value
 
+        # --- Sim IMU low-pass filter (emulates the real Mid-360 hardware IMU LPF) ---
+        # The MuJoCo accelerometer + CHAMP standing controller produce 4-23 m/s^2
+        # spikes on a STATIONARY robot (no hardware filter, picks up control
+        # vibration + contact impulses). fast_lio/Point-LIO integrate those to
+        # divergence — a real hardware-filtered IMU never sees them. A first-order
+        # IIR low-pass on accel+gyro brings the sim IMU close to real-hardware
+        # behavior (steady ~9.8 when still) so SLAM can close the nav loop.
+        # cutoff is read live each callback so it's tunable via `ros2 param set`.
+        self.declare_parameter('imu_lpf_cutoff_hz', 10.0)   # 0 disables
+        self._imu_filt_acc = None
+        self._imu_filt_gyr = None
+
         # --- ROS pub/sub ---
         self.odom_pub = self.create_publisher(Odometry, 'odom/ground_truth', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -107,7 +119,28 @@ class MujocoOdomBridge(Node):
             now_ns = self.get_clock().now().nanoseconds
             if now_ns <= self._last_imu_ns:
                 return
+            dt = (now_ns - self._last_imu_ns) * 1e-9 if self._last_imu_ns > 0 else 0.0
             self._last_imu_ns = now_ns
+            # Low-pass accel + gyro (real-hardware-IMU emulation). First-order IIR
+            # with dt-adaptive alpha so uneven sim dt is handled correctly.
+            fc = self.get_parameter('imu_lpf_cutoff_hz').get_parameter_value().double_value
+            if fc > 0.0 and dt > 0.0:
+                rc = 1.0 / (2.0 * math.pi * fc)
+                alpha = dt / (rc + dt)
+                acc = [msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z]
+                gyr = [msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z]
+                if self._imu_filt_acc is None:
+                    self._imu_filt_acc = list(acc)
+                    self._imu_filt_gyr = list(gyr)
+                else:
+                    self._imu_filt_acc = [alpha * a + (1.0 - alpha) * f
+                                          for a, f in zip(acc, self._imu_filt_acc)]
+                    self._imu_filt_gyr = [alpha * g + (1.0 - alpha) * f
+                                          for g, f in zip(gyr, self._imu_filt_gyr)]
+                (msg.linear_acceleration.x, msg.linear_acceleration.y,
+                 msg.linear_acceleration.z) = self._imu_filt_acc
+                (msg.angular_velocity.x, msg.angular_velocity.y,
+                 msg.angular_velocity.z) = self._imu_filt_gyr
             msg.header.stamp = self.get_clock().now().to_msg()
             self.imu_republish_pub.publish(msg)
 
