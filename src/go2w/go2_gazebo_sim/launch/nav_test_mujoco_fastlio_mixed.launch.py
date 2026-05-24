@@ -2275,9 +2275,9 @@ def _launch_setup(context):
         if not os.path.exists(cfpa2_config_path):
             cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
         # ── Comms-dropout interposition (centralised): starve the coordinator's
-        #    per-robot map+odom inputs (relay real -> __predrop the coordinator
+        #    per-robot map+odom inputs (relay real -> _predrop the coordinator
         #    subscribes) and delay its goal output (relay coordinator's
-        #    __predrop -> real way_point the bridge reads). Nav2 keeps the real
+        #    _predrop -> real way_point the bridge reads). Nav2 keeps the real
         #    /<ns>/map. ──
         cen_remaps = []
         cen_relays = []
@@ -2288,16 +2288,16 @@ def _launch_setup(context):
                 _odom = f"/{_ns}/odom/nav"
                 _goal = f"/{_ns}/way_point_coord"
                 cen_remaps += [
-                    (_map, _map + "__predrop"),
-                    (_odom, _odom + "__predrop"),
-                    (_goal, _goal + "__predrop"),
+                    (_map, _map + "_predrop"),
+                    (_odom, _odom + "_predrop"),
+                    (_goal, _goal + "_predrop"),
                 ]
                 cen_relays += [
-                    _make_dropout_relay(_map, _map + "__predrop",
+                    _make_dropout_relay(_map, _map + "_predrop",
                         "nav_msgs/msg/OccupancyGrid", "transient_local", _off + 4),
-                    _make_dropout_relay(_odom, _odom + "__predrop",
+                    _make_dropout_relay(_odom, _odom + "_predrop",
                         "nav_msgs/msg/Odometry", "reliable", _off + 5),
-                    _make_dropout_relay(_goal + "__predrop", _goal,
+                    _make_dropout_relay(_goal + "_predrop", _goal,
                         "geometry_msgs/msg/PointStamped", "reliable", _off + 6),
                 ]
         actions.append(
@@ -2371,8 +2371,8 @@ def _launch_setup(context):
             )
             # Comms-dropout interposition (decentralised): remap this robot's
             # peer_coordinator OUTPUTS (its peer_state + the requests/responses
-            # it sends to the peer's inbox) to __predrop topics, and relay
-            # __predrop -> real so the peer receives a lossy coordination stream.
+            # it sends to the peer's inbox) to _predrop topics, and relay
+            # _predrop -> real so the peer receives a lossy coordination stream.
             pc_remaps = []
             pc_relays = []
             if comms_dropout > 0.0:
@@ -2382,18 +2382,18 @@ def _launch_setup(context):
                 _req = f"/{_peer}/cfpa2_peer_coordination/inbox/negotiation_request"
                 _resp = f"/{_peer}/cfpa2_peer_coordination/inbox/negotiation_response"
                 pc_remaps = [
-                    (_ps, _ps + "__predrop"),
-                    (_req, _req + "__predrop"),
-                    (_resp, _resp + "__predrop"),
+                    (_ps, _ps + "_predrop"),
+                    (_req, _req + "_predrop"),
+                    (_resp, _resp + "_predrop"),
                 ]
                 pc_relays = [
-                    _make_dropout_relay(_ps + "__predrop", _ps,
+                    _make_dropout_relay(_ps + "_predrop", _ps,
                         "cfpa2_peer_coordination_msgs/msg/PeerState",
                         "best_effort", _off + 1),
-                    _make_dropout_relay(_req + "__predrop", _req,
+                    _make_dropout_relay(_req + "_predrop", _req,
                         "cfpa2_peer_coordination_msgs/msg/NegotiationRequest",
                         "reliable", _off + 2),
-                    _make_dropout_relay(_resp + "__predrop", _resp,
+                    _make_dropout_relay(_resp + "_predrop", _resp,
                         "cfpa2_peer_coordination_msgs/msg/NegotiationResponse",
                         "reliable", _off + 3),
                 ]
