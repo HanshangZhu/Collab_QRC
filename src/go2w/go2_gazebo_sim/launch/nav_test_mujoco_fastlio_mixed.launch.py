@@ -1974,6 +1974,7 @@ def _launch_setup(context):
     scene_area_m2 = float(_get(context, "scene_area_m2"))
     collision_output = _get(context, "collision_output_path").strip()
     exploration_planner = (_get(context, "exploration_planner").strip().lower() or "cfpa2")
+    coordination_mode = (_get(context, "coordination_mode").strip().lower() or "centralised")
     gbplanner3_external_cmd = _get(context, "gbplanner3_external_cmd").strip()
     gbplanner2_external_cmd = _get(context, "gbplanner2_external_cmd").strip()
     mtare_external_cmd = _get(context, "mtare_external_cmd").strip()
@@ -2252,8 +2253,8 @@ def _launch_setup(context):
         actions.extend(_build_terrain_analysis_only_stack(
             ns="robot_b", use_sim_time=use_sim_time, nav_delay=nav_delay))
 
-    # ── CFPA2 dual-robot coordinator (shared) ──
-    if explore and exploration_planner == "cfpa2":
+    # ── CFPA2 dual-robot coordinator (shared, CENTRALISED) ──
+    if explore and exploration_planner == "cfpa2" and coordination_mode == "centralised":
         cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_coordinator.yaml")
         if not os.path.exists(cfpa2_config_path):
             cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
@@ -2289,6 +2290,60 @@ def _launch_setup(context):
                 ],
             )
         )
+    # ── CFPA2 DECENTRALISED: per-robot single_robot + peer_coordinator ──
+    #    No central coordinator. Each robot picks its own frontiers; the
+    #    peer_coordinator nodes negotiate pairwise frontier claims and publish
+    #    /<ns>/cfpa2_peer_coordination/blocked_frontiers, which the single_robot
+    #    node already consumes. C++ executables (peer_coordinator is C++-only;
+    #    cfpa2_single_robot_node_cpp is the production path). Both nodes run with
+    #    NO ROS namespace and build absolute topics from robot_namespace, so
+    #    node names must be unique per robot.
+    elif explore and exploration_planner == "cfpa2" and coordination_mode == "decentralised":
+        cfpa2_single_cfg = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
+        dec_nodes = []
+        robot_ns = ["robot_a", "robot_b"]
+        for ns in robot_ns:
+            peers = [p for p in robot_ns if p != ns]
+            fm_topic = f"/{ns}/cfpa2/frontier_markers"
+            dec_nodes.append(
+                Node(
+                    package="cfpa2_collaborative_autonomy",
+                    executable="cfpa2_single_robot_node_cpp",
+                    name=f"cfpa2_single_robot_{ns}",
+                    parameters=[
+                        cfpa2_single_cfg,
+                        {
+                            "use_sim_time": use_sim_time,
+                            "namespaces": [ns],
+                            "robot_namespace": ns,
+                            "goal_topic_suffix": "/way_point_coord",
+                            "planning_map_topic_suffix": "/map",
+                            "marker_frame_override": "map",
+                            "frontier_markers_topic": fm_topic,
+                        },
+                    ],
+                    output="screen",
+                )
+            )
+            dec_nodes.append(
+                Node(
+                    package="cfpa2_peer_coordination",
+                    executable="peer_coordinator_node",
+                    name=f"peer_coordinator_{ns}",
+                    parameters=[
+                        {
+                            "use_sim_time": use_sim_time,
+                            "robot_id": ns,
+                            "robot_namespace": ns,
+                            "peer_namespaces": peers,
+                            "frontier_markers_topic": fm_topic,
+                            "odom_topic_suffix": "/odom/nav",
+                        },
+                    ],
+                    output="screen",
+                )
+            )
+        actions.append(TimerAction(period=nav_delay + 2.0, actions=dec_nodes))
     elif explore and exploration_planner in {"gbplanner2", "gbplanner3"}:
         actions.extend(_build_gbplanner_common_executor_actions(
             nav_delay=nav_delay,
@@ -2550,6 +2605,16 @@ def generate_launch_description():
                 "High-level exploration planner for common-executor benchmark: "
                 "cfpa2 | gbplanner2 | gbplanner3 | mtare. All modes execute through the same "
                 "Nav2 MPPI stack via /<ns>/way_point_coord."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "coordination_mode", default_value="centralised",
+            description=(
+                "CFPA2 coordination architecture (only used when "
+                "exploration_planner=cfpa2): centralised (single "
+                "cfpa2_coordinator_node over both robots) | decentralised "
+                "(per-robot cfpa2_single_robot_node_cpp + peer_coordinator_node "
+                "negotiating frontier claims)."
             ),
         ),
         DeclareLaunchArgument("cleanup_stale", default_value="true"),
