@@ -70,4 +70,5 @@ exec ros2 launch go2_gazebo_sim nav_test_3d_explore.launch.py \
   "spawn_yaw:=0.0" \
   "has_wheels:=false" \
   "${TRAV_WEIGHTS_ARG[@]}" \
+  "cfpa2_executable_suffix:=_cpp" \
   "$@"

@@ -143,4 +143,10 @@ echo "  trav source:  elevation_mapping_cupy + grid_map ETH-style filters"
 echo "  nvblox vox:   optional 0.10 m stream when enable_nvblox_mapper:=true"
 echo ""
 
-exec ros2 launch go2_gazebo_sim nav_test_3d_explore.launch.py "$@"
+# Default to the C++ CFPA2 binary — the Python cfpa2_single_robot_node is broken
+# (ImportError: attempted relative import) and dies at startup, leaving no
+# frontier goals (robot only moves on manual goals). _cpp is the production
+# binary, same as the ops2 launcher. Override with cfpa2_executable_suffix:= "".
+exec ros2 launch go2_gazebo_sim nav_test_3d_explore.launch.py \
+  "cfpa2_executable_suffix:=_cpp" \
+  "$@"

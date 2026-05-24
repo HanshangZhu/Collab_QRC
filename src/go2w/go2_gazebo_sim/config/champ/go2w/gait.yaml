@@ -8,7 +8,7 @@
       # reach astar's max_linear_speed cap. Robot_a (Go2W) is unaffected
       # at this cap because the hybrid_cmd_router routes higher-speed
       # commands to the wheels, not through this CHAMP gait clamp.
-      max_linear_velocity_x: 0.4
+      max_linear_velocity_x: 0.6
       max_linear_velocity_y: 0.4
       # Match the Go2W local-nav yaw ceiling so turning is not clamped down by CHAMP.
       max_angular_velocity_z: 1.0

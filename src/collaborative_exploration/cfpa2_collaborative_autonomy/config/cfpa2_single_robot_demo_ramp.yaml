@@ -86,7 +86,13 @@
     # frontier on the route to the big payoff"; tour stays stable across
     # ticks so commit naturally works.
     cfpa2_tsp_k: 5
-    cfpa2_ig_mode: "floodfill"
+    # "local" (box-count IG), NOT "floodfill": the single-call floodfill path in
+    # the C++ port is a STUB that returns 0.0 info-gain (only the batch path
+    # implements it), so every frontier reads info_gain 0 -> utility -1e18 ->
+    # rejected as low_utility -> CFPA2 publishes NO goal -> robot never explores
+    # autonomously (operator must send manual goals). ops2 overlay uses "local"
+    # for the same reason. See CLAUDE.md "THE FINAL BUG" (2026-05-20).
+    cfpa2_ig_mode: "local"
     cfpa2_floodfill_budget: 2000
     cfpa2_floodfill_max_radius_cells: 100
     # Sensor-derived bridge goal for ramps: when slope/traversability/step

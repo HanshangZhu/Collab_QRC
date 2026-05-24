@@ -212,11 +212,11 @@ controller_server:
       vx_std: 0.20       # rolled back from 0.60 after tip-over (aggressive sampling + high cap = unstable lurch)
       vy_std: 0.20
       wz_std: 0.40
-      vx_max: 0.40       # rolled back from 1.20 after tip-over; CHAMP walking gait unstable above ~0.5 m/s
+      vx_max: 0.60       # ramp-climb compromise: 0.80 made fast_lio drift (~18cm, corrupted trav grid); 0.40 tracked ~2cm but too slow to climb. 0.60 balances climb thrust vs SLAM stability. Gait cap matched.
       vx_min: -0.10      # Go2 reverses but slow (vs Go2W's -0.20)
       vy_max: 0.0        # diff-drive — no strafe in routing layer
       wz_max: 0.8        # gentler pivot than Go2W's 1.0
-      ax_max: 0.30       # soft accel for walking stability (was 0.60 — contributed to tip-over)
+      ax_max: 0.40       # softer accel (0.50->0.40) to reduce the aggressive-motion that drives fast_lio drift, still enough for ramp response
       ax_min: -0.40
       ay_max: 0.0
       az_max: 1.0
