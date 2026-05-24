@@ -72,13 +72,16 @@ run_one_attempt() {  # $1=mode $2=drop $3=tdir $4=seed -> 0 valid, 1 diverged/fa
         > "$tdir/launch.log" 2>&1 &
     local launch_pid=$!
 
-    # Wait for stack readiness (goal topic appears).
+    # Wait for Nav2 to activate. Log-based, NOT `ros2 topic list`: external ros2
+    # CLI discovery is flaky in this env and can hang indefinitely. Each robot's
+    # nav lifecycle_manager logs "Managed nodes are active" once on activation.
     local ready=0 i
     for ((i=0; i<READY_TIMEOUT; i++)); do
-        if ros2 topic list 2>/dev/null | grep -q "/robot_a/way_point_coord"; then ready=1; break; fi
+        if [ "$(grep -c 'Managed nodes are active' "$tdir/launch.log" 2>/dev/null || echo 0)" -ge 2 ]; then ready=1; break; fi
         if ! kill -0 "$launch_pid" 2>/dev/null; then break; fi
         sleep 1
     done
+    [ "$ready" -eq 1 ] && sleep 10  # settle: costmaps fill + CFPA2 starts issuing goals
     if [ "$ready" -ne 1 ]; then
         echo "    [!] stack not ready in ${READY_TIMEOUT}s"
         "$WS_DIR/scripts/debug/kill_sim.sh" >/dev/null 2>&1 || true
