@@ -1002,6 +1002,16 @@ git commit -m "docs(bench): centralised vs decentralised CFPA2 dropout benchmark
 
 ---
 
+## Execution addendum (2026-05-24, during implementation)
+
+- **Coverage helper location:** `go2w_observability` is ament_cmake scripts-only → `coverage_util.py` lives in `scripts/` (sys.path import), added to `install(PROGRAMS)`. Tests run with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` (system pytest has a broken anyio autoload).
+- **Launch prerequisite:** demo3_mixed needs `colcon build --packages-select go2w_config` (a `nav2_cpu_mppi_overlay_sim.yaml` was in src/ but not install/; missing-file launch exception cascades a full teardown). Run launches under `cmu_env` with `LD_LIBRARY_PATH+=.../site-packages/mujoco`. Run `kill_sim.sh` as its OWN command, never bundled before a backgrounded launch (it severs the chain).
+- **Decentralised nodes:** no ROS namespace, unique node names, `robot_namespace` param (absolute topics).
+- **Relay topic suffix:** `_predrop` (single underscore). `__` is reserved in ROS 2 topic names and crashes rcl remap parsing.
+- **Phase 0 GATE: PASSED** — decentralised explores end-to-end (union coverage 69.5%→81.1% in 90 s). Dropout mechanism validated at 50% (peer_state relay frac→0.5, peer_coordinators survive).
+- **Localization decision (user):** keep real Fast-LIO, **auto-detect divergence and re-run invalid trials**. The metrics logger reads GT for robot position (stays sane) so divergence is detected on `/odom/nav` via a new `odom_divergence_monitor.py` (Task 9a) that flags `|x|/|y| > bound` or NaN; the driver re-runs flagged trials up to a retry cap and only counts valid trials.
+- **Centralised relay validation** folded into the Task 10 pipeline smoke (saves a dedicated sim run).
+
 ## Self-review notes
 
 - **Spec coverage:** Component 1 → Tasks 1-2; Component 2 → Task 5; Component 3 → Tasks 3,6; Component 4 → Tasks 8-9; Phase 0 gate → Task 4; Phase 1 dry-run → Task 7; Phase 2 full run → Tasks 10-11. Union metric used for both modes (Tasks 2,9). All spec sections covered.

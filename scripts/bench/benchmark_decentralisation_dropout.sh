@@ -29,6 +29,7 @@ CFPA2_SUFFIX="${CFPA2_SUFFIX:-_cpp}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 DIVERGENCE_BOUND_M="${DIVERGENCE_BOUND_M:-60.0}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
+MIN_PROGRESS_M="${MIN_PROGRESS_M:-3.0}"  # reject trials where neither robot moved (Nav2 didn't activate)
 OUT_DIR="${OUT_DIR:-/tmp/dropout_bench/$(date +%Y%m%d_%H%M%S)}"
 MUJOCO_LIB="${MUJOCO_LIB:-/home/hanszhu/miniforge3/envs/cmu_env/lib/python3.10/site-packages/mujoco}"
 mkdir -p "$OUT_DIR"
@@ -41,6 +42,10 @@ source /opt/ros/humble/setup.bash
 source "$WS_DIR/install/setup.bash"
 set -u
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:$MUJOCO_LIB"
+# Disable DDS shared-memory (project convention): SHM ports accumulate across
+# the many sequential launches in a sweep and degrade Nav2 controller_server
+# activation, biasing late trials. UDP-only keeps every trial's bringup clean.
+export FASTRTPS_DEFAULT_PROFILES_FILE="$WS_DIR/config/fastdds_no_shm.xml"
 
 LAUNCH="ros2 launch go2_gazebo_sim nav_test_mujoco_fastlio_mixed.launch.py"
 RELAY_NS="[robot_a, robot_b]"
@@ -111,6 +116,22 @@ run_one_attempt() {  # $1=mode $2=drop $3=tdir $4=seed -> 0 valid, 1 diverged/fa
         return 1
     fi
     cp "$csv" "$tdir/metrics.csv"
+
+    # Reject trials where Nav2 never activated: neither robot moved meaningfully.
+    local maxtraj
+    maxtraj="$(python3 -c "
+import csv
+rows=list(csv.DictReader(open('$tdir/metrics.csv')))
+if not rows: print(0.0)
+else:
+    l=rows[-1]
+    a=float(l.get('robot_a_trajectory_m',0) or 0); b=float(l.get('robot_b_trajectory_m',0) or 0)
+    print(max(a,b))" 2>/dev/null)"
+    if python3 -c "import sys; sys.exit(0 if float('${maxtraj:-0}') < $MIN_PROGRESS_M else 1)"; then
+        echo "    [!] no-progress (max robot traj ${maxtraj} m < ${MIN_PROGRESS_M} m) -- Nav2 likely never activated"
+        rm -f "$tdir/metrics.csv"
+        return 1
+    fi
     return 0
 }
 
