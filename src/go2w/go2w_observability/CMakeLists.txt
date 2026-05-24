@@ -13,6 +13,7 @@ install(PROGRAMS
   scripts/dual_map_coverage_visualizer.py
   scripts/odom_comparison.py
   scripts/exploration_metrics_logger.py
+  scripts/coverage_util.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
