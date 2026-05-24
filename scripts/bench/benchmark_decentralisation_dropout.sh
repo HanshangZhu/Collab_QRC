@@ -104,6 +104,12 @@ run_one_attempt() {  # $1=mode $2=drop $3=tdir $4=seed -> 0 valid, 1 diverged/fa
     kill "$mon_pid" 2>/dev/null || true
     "$WS_DIR/scripts/debug/kill_sim.sh" >/dev/null 2>&1 || true
     kill "$launch_pid" 2>/dev/null || true
+    # kill_sim doesn't know about these benchmark-scaffolding nodes; without an
+    # explicit kill they orphan and accumulate DDS participants across trials,
+    # degrading Nav2 controller_server activation in later trials. (Do NOT run
+    # two benchmark drivers on one machine — this pkill is process-wide.)
+    pkill -9 -f comms_dropout_relay.py 2>/dev/null || true
+    pkill -9 -f odom_divergence_monitor.py 2>/dev/null || true
     sleep 2
 
     if [ "$(verdict_diverged "$tdir/divergence.json")" = "true" ]; then
