@@ -1975,6 +1975,22 @@ def _launch_setup(context):
     collision_output = _get(context, "collision_output_path").strip()
     exploration_planner = (_get(context, "exploration_planner").strip().lower() or "cfpa2")
     coordination_mode = (_get(context, "coordination_mode").strip().lower() or "centralised")
+    comms_dropout = float(_get(context, "comms_dropout") or 0.0)
+    dropout_seed = int(float(_get(context, "dropout_seed") or 0))
+    _relay_script = os.path.join(_ws_root, "scripts", "runtime", "comms_dropout_relay.py")
+
+    def _make_dropout_relay(in_topic, out_topic, msg_type, qos, seed_offset):
+        """ExecuteProcess running comms_dropout_relay.py on one directed link."""
+        return ExecuteProcess(
+            cmd=["python3", _relay_script, "--ros-args",
+                 "-p", f"in_topic:={in_topic}",
+                 "-p", f"out_topic:={out_topic}",
+                 "-p", f"msg_type:={msg_type}",
+                 "-p", f"drop_prob:={comms_dropout}",
+                 "-p", f"seed:={dropout_seed + seed_offset}",
+                 "-p", f"qos:={qos}",
+                 "-p", f"use_sim_time:={'true' if use_sim_time else 'false'}"],
+            output="screen")
     gbplanner3_external_cmd = _get(context, "gbplanner3_external_cmd").strip()
     gbplanner2_external_cmd = _get(context, "gbplanner2_external_cmd").strip()
     mtare_external_cmd = _get(context, "mtare_external_cmd").strip()
@@ -2258,6 +2274,32 @@ def _launch_setup(context):
         cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_coordinator.yaml")
         if not os.path.exists(cfpa2_config_path):
             cfpa2_config_path = os.path.join(cfpa2_pkg, "config", "cfpa2_single_robot.yaml")
+        # ── Comms-dropout interposition (centralised): starve the coordinator's
+        #    per-robot map+odom inputs (relay real -> __predrop the coordinator
+        #    subscribes) and delay its goal output (relay coordinator's
+        #    __predrop -> real way_point the bridge reads). Nav2 keeps the real
+        #    /<ns>/map. ──
+        cen_remaps = []
+        cen_relays = []
+        if comms_dropout > 0.0:
+            for _i, _ns in enumerate(["robot_a", "robot_b"]):
+                _off = _i * 10
+                _map = f"/{_ns}/map"
+                _odom = f"/{_ns}/odom/nav"
+                _goal = f"/{_ns}/way_point_coord"
+                cen_remaps += [
+                    (_map, _map + "__predrop"),
+                    (_odom, _odom + "__predrop"),
+                    (_goal, _goal + "__predrop"),
+                ]
+                cen_relays += [
+                    _make_dropout_relay(_map, _map + "__predrop",
+                        "nav_msgs/msg/OccupancyGrid", "transient_local", _off + 4),
+                    _make_dropout_relay(_odom, _odom + "__predrop",
+                        "nav_msgs/msg/Odometry", "reliable", _off + 5),
+                    _make_dropout_relay(_goal + "__predrop", _goal,
+                        "geometry_msgs/msg/PointStamped", "reliable", _off + 6),
+                ]
         actions.append(
             TimerAction(
                 period=nav_delay + 2.0,
@@ -2285,8 +2327,10 @@ def _launch_setup(context):
                                 "shared_map_wait_sec": 35.0,
                             },
                         ],
+                        remappings=cen_remaps,
                         output="screen",
                     ),
+                    *cen_relays,
                 ],
             )
         )
@@ -2325,6 +2369,34 @@ def _launch_setup(context):
                     output="screen",
                 )
             )
+            # Comms-dropout interposition (decentralised): remap this robot's
+            # peer_coordinator OUTPUTS (its peer_state + the requests/responses
+            # it sends to the peer's inbox) to __predrop topics, and relay
+            # __predrop -> real so the peer receives a lossy coordination stream.
+            pc_remaps = []
+            pc_relays = []
+            if comms_dropout > 0.0:
+                _off = robot_ns.index(ns) * 10
+                _peer = peers[0]
+                _ps = f"/{ns}/cfpa2_peer_coordination/peer_state"
+                _req = f"/{_peer}/cfpa2_peer_coordination/inbox/negotiation_request"
+                _resp = f"/{_peer}/cfpa2_peer_coordination/inbox/negotiation_response"
+                pc_remaps = [
+                    (_ps, _ps + "__predrop"),
+                    (_req, _req + "__predrop"),
+                    (_resp, _resp + "__predrop"),
+                ]
+                pc_relays = [
+                    _make_dropout_relay(_ps + "__predrop", _ps,
+                        "cfpa2_peer_coordination_msgs/msg/PeerState",
+                        "best_effort", _off + 1),
+                    _make_dropout_relay(_req + "__predrop", _req,
+                        "cfpa2_peer_coordination_msgs/msg/NegotiationRequest",
+                        "reliable", _off + 2),
+                    _make_dropout_relay(_resp + "__predrop", _resp,
+                        "cfpa2_peer_coordination_msgs/msg/NegotiationResponse",
+                        "reliable", _off + 3),
+                ]
             dec_nodes.append(
                 Node(
                     package="cfpa2_peer_coordination",
@@ -2340,9 +2412,11 @@ def _launch_setup(context):
                             "odom_topic_suffix": "/odom/nav",
                         },
                     ],
+                    remappings=pc_remaps,
                     output="screen",
                 )
             )
+            dec_nodes.extend(pc_relays)
         actions.append(TimerAction(period=nav_delay + 2.0, actions=dec_nodes))
     elif explore and exploration_planner in {"gbplanner2", "gbplanner3"}:
         actions.extend(_build_gbplanner_common_executor_actions(
@@ -2616,6 +2690,19 @@ def generate_launch_description():
                 "(per-robot cfpa2_single_robot_node_cpp + peer_coordinator_node "
                 "negotiating frontier claims)."
             ),
+        ),
+        DeclareLaunchArgument(
+            "comms_dropout", default_value="0.0",
+            description=(
+                "Per-message drop probability [0..0.8] on the active mode's "
+                "coordination links (decentralised: peer<->peer peer_state + "
+                "negotiation; centralised: robot<->coordinator map/odom in + "
+                "goal out). 0.0 = no dropout."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "dropout_seed", default_value="0",
+            description="Seed for the comms-dropout RNG (set per benchmark trial).",
         ),
         DeclareLaunchArgument("cleanup_stale", default_value="true"),
         DeclareLaunchArgument(
