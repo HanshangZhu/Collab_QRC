@@ -27,16 +27,19 @@ DURATION_SEC="${DURATION_SEC:-600}"
 SCENE_AREA_M2="${SCENE_AREA_M2:-384.0}"
 CFPA2_SUFFIX="${CFPA2_SUFFIX:-_cpp}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
-DIVERGENCE_BOUND_M="${DIVERGENCE_BOUND_M:-60}"
+DIVERGENCE_BOUND_M="${DIVERGENCE_BOUND_M:-60.0}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 OUT_DIR="${OUT_DIR:-/tmp/dropout_bench/$(date +%Y%m%d_%H%M%S)}"
 MUJOCO_LIB="${MUJOCO_LIB:-/home/hanszhu/miniforge3/envs/cmu_env/lib/python3.10/site-packages/mujoco}"
 mkdir -p "$OUT_DIR"
 
+# ROS setup scripts are not `set -u` safe; disable nounset only while sourcing.
+set +u
 # shellcheck disable=SC1091
 source /opt/ros/humble/setup.bash
 # shellcheck disable=SC1091
 source "$WS_DIR/install/setup.bash"
+set -u
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:$MUJOCO_LIB"
 
 LAUNCH="ros2 launch go2_gazebo_sim nav_test_mujoco_fastlio_mixed.launch.py"

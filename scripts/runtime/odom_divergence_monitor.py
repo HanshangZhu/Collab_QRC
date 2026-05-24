@@ -14,6 +14,7 @@ import sys
 
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import ParameterDescriptor
 from nav_msgs.msg import Odometry
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -25,7 +26,9 @@ class OdomDivergenceMonitor(Node):
         super().__init__("odom_divergence_monitor")
         self.declare_parameter("namespaces", ["robot_a", "robot_b"])
         self.declare_parameter("odom_topic_suffix", "/odom/nav")
-        self.declare_parameter("bound_m", 60.0)
+        # dynamic_typing so the bound may be passed as int (60) or float (60.0).
+        self.declare_parameter(
+            "bound_m", 60.0, ParameterDescriptor(dynamic_typing=True))
         self.declare_parameter("out_file", "/tmp/divergence_verdict.json")
 
         self._ns = list(self.get_parameter("namespaces").value)
