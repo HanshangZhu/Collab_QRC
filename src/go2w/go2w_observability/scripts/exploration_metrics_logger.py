@@ -64,6 +64,11 @@ try:
 except ImportError:
     _HAS_BT_LOG = False
 
+# coverage_util lives beside this script (ament_cmake scripts-only package).
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from coverage_util import union_known_cell_count  # noqa: E402
+
 
 class _RobotState:
     """Accumulates metrics for one robot."""
@@ -148,6 +153,7 @@ class ExplorationMetricsLogger(Node):
         self.declare_parameter("summary_interval_sec", 30.0)
         self.declare_parameter("enable_stop_trigger", True)
         self.declare_parameter("global_map_topic", "/merged_map")
+        self.declare_parameter("global_coverage_source", "merged_map")  # merged_map | union
         self.declare_parameter("scene_area_m2", 0.0)
         # OccupancyGrid callbacks can arrive faster than the CSV log rate, and
         # converting every grid to overlap sets is CPU-heavy on growing maps.
@@ -175,6 +181,8 @@ class ExplorationMetricsLogger(Node):
             self.get_parameter("enable_stop_trigger").value)
         self._global_map_topic = str(
             self.get_parameter("global_map_topic").value).strip()
+        self._global_coverage_source = str(
+            self.get_parameter("global_coverage_source").value).strip()
         self._scene_area_m2 = float(
             self.get_parameter("scene_area_m2").value)
         self._map_processing_min_period_sec = max(0.0, float(
@@ -279,7 +287,7 @@ class ExplorationMetricsLogger(Node):
             self._cancel_clients[ns] = self.create_client(
                 CancelGoal, f"/{ns}/navigate_to_pose/_action/cancel_goal")
 
-        if self._global_map_topic:
+        if self._global_map_topic and self._global_coverage_source == "merged_map":
             self.create_subscription(
                 OccupancyGrid, self._global_map_topic, self._global_map_cb, 1)
 
@@ -757,6 +765,13 @@ class ExplorationMetricsLogger(Node):
             else:
                 parts.append("0.00")
 
+        if self._global_coverage_source == "union":
+            cell_sets = [rs.explored_cells for rs in self.robots.values()]
+            self._global_map_known_cells = union_known_cell_count(cell_sets)
+            resolutions = [rs.map_resolution for rs in self.robots.values()
+                           if rs.map_resolution > 0.0]
+            if resolutions:
+                self._global_map_resolution = resolutions[0]
         global_area = self._global_map_known_cells * (self._global_map_resolution ** 2)
         global_ratio = (global_area / self._scene_area_m2) if self._scene_area_m2 > 0 else 0.0
         parts.extend([f"{global_area:.3f}", f"{global_ratio:.6f}"])
