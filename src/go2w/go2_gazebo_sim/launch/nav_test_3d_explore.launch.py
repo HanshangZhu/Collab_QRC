@@ -125,6 +125,23 @@ def generate_launch_description() -> LaunchDescription:
                         "(12-DoF leg only, CHAMP cmd_vel_legged direct, no "
                         "router). Forwarded to nav_test_mujoco_fastlio."),
         DeclareLaunchArgument(
+            "rl_policy", default_value="false",
+            description="Run the Isaac-Lab ONNX policy in place of CHAMP "
+                        "(requires has_wheels:=false). For the demo_ramp climb "
+                        "pass a 49-dim rough policy via rl_model_path. Forwarded "
+                        "to nav_test_mujoco_fastlio → single_go2w_mujoco_cfpa2."),
+        DeclareLaunchArgument(
+            "rl_model_path", default_value="",
+            description="With rl_policy:=true, absolute path to the ONNX policy. "
+                        "Empty = node default (flat_policy_v6, 45-dim). Pass "
+                        "rough_policy_v1.onnx (49-dim) for ramp/rough terrain."),
+        DeclareLaunchArgument(
+            "rl_sar_config", default_value="",
+            description="With rl_policy:=true, path to an rl_sar policy dir "
+                        "(config.yaml + .pt, e.g. src/vendor/rl_sar/policy/go2/"
+                        "robot_lab) → config-driven go2_rl_sar_node. Recommended "
+                        "for rough-terrain cmd_vel locomotion. Beats rl_model_path."),
+        DeclareLaunchArgument(
             "trav_weight_file", default_value=default_trav_weights,
             description="Path to the traversability CNN weights.dat pickle. "
                         "Default = baseline ETH weights shipped in "
@@ -161,16 +178,23 @@ def generate_launch_description() -> LaunchDescription:
             "cfpa2_executable_suffix": LaunchConfiguration("cfpa2_executable_suffix"),
             "nav_costmap_mode": LaunchConfiguration("nav_costmap_mode"),
             "has_wheels": LaunchConfiguration("has_wheels"),
-            # A verified ramp viewpoint means the Go2W should climb with
-            # controlled wheel drive instead of treating the segment as open
-            # flat-ground cruise. The trigger remains sensor-derived; no
-            # scene-coordinate corridor is configured.
+            "rl_policy": LaunchConfiguration("rl_policy"),
+            "rl_model_path": LaunchConfiguration("rl_model_path"),
+            "rl_sar_config": LaunchConfiguration("rl_sar_config"),
+            # Ramp climb is driven by the PITCH-triggered force-wheel: when the
+            # Go2W body tilts past ~5° (physically on the ramp), the hybrid
+            # router holds sustained wheel mode and floors the forward speed to
+            # pitch_climb_vx_mps so the wheels roll straight up the incline. This
+            # is goal-independent — it works no matter where CFPA2's goal sits.
+            # The old goal-based ramp_force_wheel is disabled: it was dormant
+            # anyway (its ramp_ascent_goal_mode topic has no publisher since the
+            # ramp_ascent_goal_node was removed) and its 0.17 m/s cap would fight
+            # the pitch path's faster climb floor.
             "ramp_force_legged_enabled": "false",
-            "ramp_force_wheel_enabled": "true",
-            "ramp_goal_mode_topic": "ramp_ascent_goal_mode",
-            "ramp_goal_stale_sec": "3.0",
-            "ramp_force_max_vx_mps": "0.17",
-            "ramp_force_max_yaw_rate_rps": "0.20",
+            "ramp_force_wheel_enabled": "false",
+            "pitch_force_wheel_enabled": "true",
+            "pitch_force_wheel_threshold_rad": "0.070",
+            "pitch_climb_vx_mps": "0.45",
             # CFPA2 param overlay (default demo_ramp; ops2 wrapper passes
             # cfpa2_single_robot_ops2.yaml). demo_ramp tightens frontier
             # filters for 2 m ramp corridors; ops2 disables allow_unknown

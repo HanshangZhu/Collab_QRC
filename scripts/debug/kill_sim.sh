@@ -42,6 +42,7 @@ for pat in \
   twist_bridge qos_bridge autonomy_enabler exploration_metrics path_relay \
   stuck_watchdog stuck_diagnoser trajectory_monitor wait_for_ready \
   stand_up_slowly initial_pose_guard spawn_entity quadruped_controller \
+  go2_rl_sar_node go2_rl_policy_node go2_rl_policy go2_rl_sar \
   state_estimation robot_state_publisher ekf_node controller_manager spawner \
   static_transform_publisher cloud_world_offset trav_grid_diag \
   "install/go2w" "install/mujoco_sensor" "install/cfpa2" "install/elevation" \

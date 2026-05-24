@@ -176,6 +176,9 @@ def _launch_setup(context):
     ramp_goal_stale_sec = float(_get(context, "ramp_goal_stale_sec"))
     ramp_force_max_vx_mps = float(_get(context, "ramp_force_max_vx_mps"))
     ramp_force_max_yaw_rate_rps = float(_get(context, "ramp_force_max_yaw_rate_rps"))
+    pitch_force_wheel_enabled = _as_bool(_get(context, "pitch_force_wheel_enabled"))
+    pitch_force_wheel_threshold_rad = float(_get(context, "pitch_force_wheel_threshold_rad"))
+    pitch_climb_vx_mps = float(_get(context, "pitch_climb_vx_mps"))
 
     # MuJoCo MJCF model path
     mujoco_model_path = _get(context, "mujoco_model_path").strip()
@@ -493,6 +496,12 @@ def _launch_setup(context):
 
     # ── Robot actions: started once platform is ready ──
     robot_actions = []
+    # rl_policy only: leg-loop actions (twist_bridge + RL node) that must engage
+    # EARLY (as soon as the effort controller is up) to hold the robot at home
+    # before it sags — fast_lio + the rest of robot_actions start later, after
+    # the RL HOLD/STANDUP has the base steady (fast_lio must init on a settled
+    # robot). Empty in non-rl_policy modes.
+    rl_actions = []
 
     # -- Sim-specific control routing --
     if enable_control and rl_policy:
@@ -502,7 +511,7 @@ def _launch_setup(context):
         # twist_bridge to convert FAR pathFollower's TwistStamped output on
         # /cmd_vel_stamped into Twist on /cmd_vel_legged that the RL node
         # consumes.
-        robot_actions.append(
+        rl_actions.append(
             Node(
                 package="go2w_perception",
                 executable="twist_bridge.py",
@@ -511,37 +520,71 @@ def _launch_setup(context):
                 output="screen",
             )
         )
-        rl_node_path = os.path.join(_ws_root, "scripts/runtime/go2_rl_policy_node.py")
-        # Give the effort controller time to spawn and joint_states to flow,
-        # then start the node. Its internal ``stand_up_sec=4.0`` holds the
-        # target at home pose before policy takes over, so we don't need to
-        # wait for CHAMP's stand_up_slowly trajectory (which targets the old
-        # trajectory controller and is inert with the new effort YAML).
-        rl_delay_sec = 8.0
-        robot_actions.append(
-            TimerAction(
-                period=rl_delay_sec,
-                actions=[
-                    ExecuteProcess(
-                        cmd=[
-                            "/home/hz/miniforge3/envs/cmu_env/bin/python3", "-u",
-                            rl_node_path,
-                            "--ros-args", "-r", f"__ns:=/{robot_ns}",
-                            "-p", "publish_efforts:=true",
-                            # Keyframe already spawns robot at Menagerie home
-                            # stance — no STANDUP needed. A non-zero STANDUP
-                            # (kp=80) tries to pull thighs from Menagerie home
-                            # (0.9) to IL default (1.1) and triggers under-
-                            # damped oscillation, leaving joint vel >10 rad/s
-                            # by the time POLICY takes over. Go straight to
-                            # HOLD with policy gains.
-                            "-p", "stand_up_sec:=0.0",
-                            "-p", "cmd_hold_sec:=4.0",
-                        ],
-                        name="go2_rl_policy",
-                        output="screen",
-                    ),
-                ],
+        # The RL node needs cmu_env's python (onnxruntime/torch/numpy live there).
+        # sys.executable is NOT it — the `ros2` CLI shebang is /usr/bin/python3,
+        # so the OpaqueFunction runs under system python. CONDA_PREFIX is also
+        # unreliable (not always exported into the launch env). Resolve the
+        # cmu_env interpreter robustly + portably: CONDA_PREFIX first, then the
+        # standard conda-distro env locations under $HOME, then sys.executable.
+        def _resolve_cmu_python():
+            cands = []
+            cp = os.environ.get("CONDA_PREFIX", "")
+            if cp:
+                cands.append(os.path.join(cp, "bin", "python3"))
+            home = os.path.expanduser("~")
+            for distro in ("miniforge3", "mambaforge", "miniconda3", "anaconda3"):
+                cands.append(os.path.join(home, distro, "envs", "cmu_env", "bin", "python3"))
+            for c in cands:
+                if os.path.exists(c):
+                    return c
+            return sys.executable
+        rl_python = _resolve_cmu_python()
+        rl_sar_config = _get(context, "rl_sar_config").strip()
+        if rl_sar_config:
+            # Config-driven path: run a vendored rl_sar policy (go2/robot_lab,
+            # go2/himloco, …) via go2_rl_sar_node.py. Everything — obs terms,
+            # scales, defaults, gains, joint mapping, history — comes from the
+            # rl_sar config.yaml in this dir; base.yaml (joint_names) sits one
+            # level up. This is the recommended path for rough-terrain cmd_vel
+            # locomotion; the IL flat-policy path below is the legacy fallback.
+            rl_node_path = os.path.join(_ws_root, "scripts/runtime/go2_rl_sar_node.py")
+            rl_base_config = os.path.join(os.path.dirname(rl_sar_config.rstrip("/")),
+                                          "base.yaml")
+            rl_cmd = [
+                rl_python, "-u", rl_node_path,
+                "--ros-args", "-r", f"__ns:=/{robot_ns}",
+                "-p", "publish_efforts:=true",
+                "-p", f"config_dir:={rl_sar_config}",
+                "-p", f"base_config:={rl_base_config}",
+                # getup window: nothing holds the robot before the node engages
+                # (~8 s), so it sags. STANDUP runs a stiff fixed-PD (from the
+                # config) to the default pose to lift it before the policy + cmd
+                # take over.
+                "-p", "stand_up_sec:=5.0",
+                "-p", "cmd_hold_sec:=3.0",
+            ]
+        else:
+            # Legacy IL flat/rough policy path (scripts/runtime/go2_rl_policy_node.py).
+            rl_node_path = os.path.join(_ws_root, "scripts/runtime/go2_rl_policy_node.py")
+            rl_model_path = _get(context, "rl_model_path").strip()
+            rl_cmd = [
+                rl_python, "-u", rl_node_path,
+                "--ros-args", "-r", f"__ns:=/{robot_ns}",
+                "-p", "publish_efforts:=true",
+                "-p", "stand_up_sec:=5.0",
+                "-p", "cmd_hold_sec:=3.0",
+            ]
+            # Optional explicit policy. Empty → node default (flat_policy_v6).
+            if rl_model_path:
+                rl_cmd += ["-p", f"model_path:={rl_model_path}"]
+        # The RL node + twist_bridge are gated EARLY (see the rl_policy branch of
+        # the readiness gate below) so they engage right after the effort
+        # controller is up, minimising sag time. No internal TimerAction here.
+        rl_actions.append(
+            ExecuteProcess(
+                cmd=rl_cmd,
+                name="go2_rl_policy",
+                output="screen",
             )
         )
     elif enable_control:
@@ -587,6 +630,13 @@ def _launch_setup(context):
                             "ramp_goal_stale_sec": ramp_goal_stale_sec,
                             "ramp_force_max_vx_mps": ramp_force_max_vx_mps,
                             "ramp_force_max_yaw_rate_rps": ramp_force_max_yaw_rate_rps,
+                            # Pitch-triggered force-wheel (goal-independent ramp
+                            # climb): when the body pitches past the threshold,
+                            # hold sustained wheel mode + floor the climb speed.
+                            "pitch_force_wheel_enabled": pitch_force_wheel_enabled,
+                            "pitch_force_wheel_threshold_rad": pitch_force_wheel_threshold_rad,
+                            "pitch_climb_vx_mps": pitch_climb_vx_mps,
+                            "pitch_odom_topic": "odom/nav",
                         },
                     ],
                     output="screen",
@@ -825,7 +875,24 @@ def _launch_setup(context):
     )
 
     # ── Wire readiness gate -> robot actions ──
-    if robot_actions:
+    if rl_policy:
+        # rl_policy owns the leg loop. CHAMP's stand_up_slowly node publishes a
+        # JointTrajectory to <effort_ctrl>/joint_trajectory, but the RL effort
+        # YAML loads a forward-command (Float64MultiArray) controller with no
+        # joint_trajectory interface — so stand_up_slowly waits for a subscriber
+        # that never appears and NEVER exits. Gating on its exit (the CHAMP path
+        # below) would hang the RL node forever. Two fixed timers instead:
+        #   • rl_actions EARLY (8 s) — the effort controller is up by ~7 s, so
+        #     the RL node engages and its STANDUP phase lifts the sagged base
+        #     back to home before it sprawls further.
+        #   • robot_actions LATER (16 s) — fast_lio + perception start once the
+        #     RL HOLD phase has the base steady, so fast_lio inits on a settled
+        #     robot (init during the standup lift would corrupt its gravity est).
+        if rl_actions:
+            actions.append(TimerAction(period=8.0, actions=rl_actions))
+        if robot_actions:
+            actions.append(TimerAction(period=16.0, actions=robot_actions))
+    elif robot_actions:
         if enable_assets and "stand_up_node" in stack_handles:
             # Gate fast_lio (+ the rest of robot_actions) on stand-up COMPLETION
             # plus a settle delay — NOT the early IMU-stable wait_for_platform
@@ -904,6 +971,21 @@ def generate_launch_description():
                                   "but the pre-RL stand-up trajectory actually holds the "
                                   "robot up. Useful for smoke-testing before we wire a "
                                   "proper stand → RL handoff."),
+            DeclareLaunchArgument("rl_model_path", default_value="",
+                                  description="Only honoured when rl_policy:=true. "
+                                  "Absolute path to the ONNX policy. Empty = node default "
+                                  "(flat_policy_v6, 45-dim). Pass a 49-dim rough policy "
+                                  "(e.g. .../share/models/rough_policy_v1.onnx) for ramp / "
+                                  "rough-terrain climbing — the node auto-detects the obs "
+                                  "dim and adds the 4 foot-contact inputs."),
+            DeclareLaunchArgument("rl_sar_config", default_value="",
+                                  description="Only honoured when rl_policy:=true. Path to "
+                                  "an rl_sar policy dir (containing config.yaml + .pt, e.g. "
+                                  "src/vendor/rl_sar/policy/go2/robot_lab). When set, runs "
+                                  "the config-driven go2_rl_sar_node (rough-terrain cmd_vel "
+                                  "locomotion) instead of the legacy IL flat-policy node. "
+                                  "base.yaml is read from the parent dir. Takes precedence "
+                                  "over rl_model_path."),
             DeclareLaunchArgument("spawn_x", default_value="1.0"),
             DeclareLaunchArgument("spawn_y", default_value="0.0"),
             DeclareLaunchArgument("spawn_yaw", default_value="0.0"),
@@ -946,6 +1028,14 @@ def generate_launch_description():
             DeclareLaunchArgument("ramp_goal_stale_sec", default_value="1.5"),
             DeclareLaunchArgument("ramp_force_max_vx_mps", default_value="0.30"),
             DeclareLaunchArgument("ramp_force_max_yaw_rate_rps", default_value="0.20"),
+            DeclareLaunchArgument("pitch_force_wheel_enabled", default_value="false",
+                                  description="Go2W only: when the body pitches past "
+                                  "pitch_force_wheel_threshold_rad (on a slope), hold "
+                                  "sustained wheel mode + floor forward speed to "
+                                  "pitch_climb_vx_mps so the wheels roll up the incline "
+                                  "instead of stalling. Goal-independent ramp-climb assist."),
+            DeclareLaunchArgument("pitch_force_wheel_threshold_rad", default_value="0.070"),
+            DeclareLaunchArgument("pitch_climb_vx_mps", default_value="0.45"),
             DeclareLaunchArgument(
                 "odom_bridge_publish_tf",
                 default_value="true",

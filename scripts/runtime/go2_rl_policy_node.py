@@ -53,6 +53,16 @@ except ImportError:
     print("onnxruntime not installed — `pip install onnxruntime` in cmu_env", file=sys.stderr)
     raise
 
+# champ_msgs/ContactsStamped carries the per-leg foot-contact bools published by
+# mujoco_contact_node on /<ns>/foot_contacts. Only needed by 49-dim rough
+# policies; soft-import so 45-dim flat policies still run if it's unavailable.
+try:
+    from champ_msgs.msg import ContactsStamped
+    _HAVE_CHAMP_MSGS = True
+except ImportError:
+    ContactsStamped = None
+    _HAVE_CHAMP_MSGS = False
+
 # --------------------------------------------------------------------------
 # Joint layouts
 
@@ -142,6 +152,7 @@ class Go2RLPolicy(Node):
         self.declare_parameter("joint_states_topic", "joint_states")
         self.declare_parameter("imu_topic", "imu/data")
         self.declare_parameter("cmd_vel_topic", "cmd_vel_legged")
+        self.declare_parameter("foot_contacts_topic", "foot_contacts")
         self.declare_parameter("effort_topic",
                                "robot_joint_group_effort_controller/commands")
         self.declare_parameter("debug_actions_topic", "rl_actions")
@@ -158,8 +169,10 @@ class Go2RLPolicy(Node):
         model_path = str(self.get_parameter("model_path").value).strip()
         if not model_path:
             # v3 + v5 are pronking-gait policies (per upstream comment in the
-            # deploy node). v6 is the proper trot. v7 has a 49-dim obs we
-            # don't build yet — stick with v6.
+            # deploy node). v6 is the proper flat trot (45-dim obs). For rough
+            # terrain (e.g. the demo_ramp climb) pass model_path:= a 49-dim
+            # policy such as rough_policy_v1.onnx — the obs builder auto-adds
+            # the 4 foot-contact bools when it detects a 49-dim input.
             workspace = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             model_path = os.path.join(
                 workspace, "src", "vendor", "go2_rl_ws", "src", "unitree_ros2_python",
@@ -169,6 +182,22 @@ class Go2RLPolicy(Node):
             raise FileNotFoundError(f"ONNX model not found: {model_path}")
         self.ort_session = ort.InferenceSession(model_path)
 
+        # Auto-detect obs dimension from the ONNX input. 45-dim = flat policy;
+        # 49-dim = rough policy (45-dim + 4 binary foot contacts). The obs
+        # builder switches layout off this flag — no per-model launch arg needed.
+        self.obs_dim = int(self.ort_session.get_inputs()[0].shape[1])
+        if self.obs_dim not in (45, 49):
+            raise ValueError(
+                f"Unsupported policy obs dim {self.obs_dim} (expected 45 or 49)"
+            )
+        self.use_foot_contacts = (self.obs_dim == 49)
+        if self.use_foot_contacts and not _HAVE_CHAMP_MSGS:
+            raise ImportError(
+                "49-dim rough policy needs champ_msgs.ContactsStamped for the "
+                "/foot_contacts input, but champ_msgs is not importable. Build + "
+                "source the workspace (champ_msgs) before launching rl_policy."
+            )
+
         # ---- state buffers ------------------------------------------------
         self.joint_pos = np.zeros(12, dtype=np.float32)    # absolute positions (not centred)
         self.joint_vel = np.zeros(12, dtype=np.float32)
@@ -176,6 +205,9 @@ class Go2RLPolicy(Node):
         self.projected_gravity = np.zeros(3, dtype=np.float32)
         self.cmd_vel = np.zeros(3, dtype=np.float32)
         self.last_raw_action = np.zeros(12, dtype=np.float32)
+        # Binary foot contacts in IL hip order [FL, FR, RL, RR] — matches both
+        # mujoco_contact_node's CHAMP convention and the rough policy's training.
+        self.foot_contacts = np.zeros(4, dtype=np.float32)
         self.have_joint_state = False
         self.have_imu = False
 
@@ -189,6 +221,10 @@ class Go2RLPolicy(Node):
         self.create_subscription(Twist,
             str(self.get_parameter("cmd_vel_topic").value),
             self.cmd_vel_cb, 10)
+        if self.use_foot_contacts:
+            self.create_subscription(ContactsStamped,
+                str(self.get_parameter("foot_contacts_topic").value),
+                self.foot_contacts_cb, 20)
 
         # ---- publishers ---------------------------------------------------
         self.debug_pub = self.create_publisher(Float32MultiArray,
@@ -214,10 +250,12 @@ class Go2RLPolicy(Node):
         self._last_log_t = self.get_clock().now()
 
         mode = "LIVE" if self.publish_efforts else "DRY"
+        obs_kind = "49-dim rough (+foot contacts)" if self.use_foot_contacts else "45-dim flat"
         self.get_logger().info(
-            f"Go2 RL policy [{mode}]: model={os.path.basename(model_path)}, "
-            f"kp_rl={self.kp:.1f}/{self.kd:.2f}, kp_stand={self.stand_up_kp:.0f}/"
-            f"{self.stand_up_kd:.1f}, stand_up_sec={self.stand_up_sec:.1f}"
+            f"Go2 RL policy [{mode}]: model={os.path.basename(model_path)} "
+            f"[{obs_kind}], kp_rl={self.kp:.1f}/{self.kd:.2f}, kp_stand="
+            f"{self.stand_up_kp:.0f}/{self.stand_up_kd:.1f}, "
+            f"stand_up_sec={self.stand_up_sec:.1f}"
         )
 
     # ---- subscribers ------------------------------------------------------
@@ -248,6 +286,16 @@ class Go2RLPolicy(Node):
             v[:] = 0.0
         self.cmd_vel = v
 
+    def foot_contacts_cb(self, msg) -> None:
+        # champ_msgs/ContactsStamped.contacts is bool[4] in [FL, FR, RL, RR]
+        # order (mujoco_contact_node's _LEG_ROOT_BODIES). This matches the IL
+        # hip ordering, so the contacts feed straight into the obs unreordered.
+        c = msg.contacts
+        if len(c) >= 4:
+            self.foot_contacts = np.array(
+                [1.0 if c[i] else 0.0 for i in range(4)], dtype=np.float32
+            )
+
     # ---- main tick --------------------------------------------------------
     def step(self) -> None:
         if not (self.have_joint_state and self.have_imu):
@@ -275,15 +323,20 @@ class Go2RLPolicy(Node):
         if elapsed < self.stand_up_sec or elapsed_into_policy < self.cmd_hold_sec:
             feed_cmd[:] = 0.0
 
-        obs = np.concatenate([
+        obs_parts = [
             self.base_ang_vel,
             self.projected_gravity,
             feed_cmd,
             self.joint_pos - IL_DEFAULTS,   # IL convention: obs joint_pos is centred
             self.joint_vel,
-            self.last_raw_action,
-        ]).astype(np.float32).reshape(1, -1)
-        assert obs.shape == (1, 45), f"obs shape {obs.shape} ≠ (1, 45)"
+        ]
+        if self.use_foot_contacts:
+            # Rough policy obs order: ... joint_vel, foot_contacts, last_action.
+            obs_parts.append(self.foot_contacts)
+        obs_parts.append(self.last_raw_action)
+        obs = np.concatenate(obs_parts).astype(np.float32).reshape(1, -1)
+        assert obs.shape == (1, self.obs_dim), \
+            f"obs shape {obs.shape} ≠ (1, {self.obs_dim})"
 
         raw = self.ort_session.run(
             None, {self.ort_session.get_inputs()[0].name: obs}
@@ -293,11 +346,16 @@ class Go2RLPolicy(Node):
         # One-shot dump of the first policy-phase obs for debugging.
         if elapsed >= self.stand_up_sec and not getattr(self, "_dumped_obs", False):
             self._dumped_obs = True
+            o = obs[0]
+            tail = (
+                f"contacts={o[33:37].tolist()} last_act={o[37:49].tolist()}"
+                if self.use_foot_contacts
+                else f"last_act={o[33:45].tolist()}"
+            )
             self.get_logger().warn(
-                f"FIRST-POLICY-OBS: ang_vel={obs[0, :3].tolist()} "
-                f"grav={obs[0, 3:6].tolist()} cmd={obs[0, 6:9].tolist()} "
-                f"pos-def={obs[0, 9:21].tolist()} vel={obs[0, 21:33].tolist()} "
-                f"last_act={obs[0, 33:45].tolist()}"
+                f"FIRST-POLICY-OBS: ang_vel={o[0:3].tolist()} "
+                f"grav={o[3:6].tolist()} cmd={o[6:9].tolist()} "
+                f"pos-def={o[9:21].tolist()} vel={o[21:33].tolist()} {tail}"
             )
             self.get_logger().warn(f"FIRST-POLICY-RAW: {raw.tolist()}")
 

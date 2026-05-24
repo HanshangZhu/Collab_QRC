@@ -8,6 +8,7 @@ import math
 
 import rclpy
 from geometry_msgs.msg import PointStamped, Twist
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
@@ -186,6 +187,19 @@ class Go2WHybridCmdRouter(Node):
         self.declare_parameter("ramp_force_max_abs_goal_y", 1.0e9)
         self.declare_parameter("ramp_force_max_vx_mps", 0.17)
         self.declare_parameter("ramp_force_max_yaw_rate_rps", 0.35)
+        # Pitch-triggered force-wheel: when the body pitches past a threshold
+        # (robot physically on a slope), hold sustained wheel mode and floor
+        # the forward speed so the wheels drive briskly UP the incline instead
+        # of stalling. Goal-independent (unlike ramp_goal-based force-wheel),
+        # so it works regardless of where CFPA2's goal is. Reads pitch from an
+        # odometry source.
+        self.declare_parameter("pitch_force_wheel_enabled", False)
+        self.declare_parameter("pitch_force_wheel_threshold_rad", 0.070)  # ~4 deg (filtered)
+        self.declare_parameter("pitch_ema_alpha", 0.15)  # EMA on pitch: rejects gait bob
+        self.declare_parameter("pitch_climb_vx_mps", 0.45)
+        self.declare_parameter("pitch_climb_max_yaw_rate_rps", 0.40)
+        self.declare_parameter("pitch_odom_topic", "odom/nav")
+        self.declare_parameter("pitch_stale_sec", 0.5)
 
         input_topic = str(self.get_parameter("input_topic").value)
         legged_topic = str(self.get_parameter("legged_topic").value)
@@ -273,6 +287,26 @@ class Go2WHybridCmdRouter(Node):
         self._ramp_goal_rx_sec: float | None = None
         self._ramp_goal_mode: str | None = None
         self._ramp_goal_mode_rx_sec: float | None = None
+
+        self.pitch_force_wheel_enabled = bool(
+            self.get_parameter("pitch_force_wheel_enabled").value
+        )
+        self.pitch_force_wheel_threshold_rad = abs(
+            float(self.get_parameter("pitch_force_wheel_threshold_rad").value)
+        )
+        self.pitch_ema_alpha = min(1.0, max(0.01,
+            float(self.get_parameter("pitch_ema_alpha").value)))
+        self.pitch_climb_vx_mps = max(
+            0.0, float(self.get_parameter("pitch_climb_vx_mps").value)
+        )
+        self.pitch_climb_max_yaw_rate_rps = max(
+            0.0, float(self.get_parameter("pitch_climb_max_yaw_rate_rps").value)
+        )
+        self.pitch_stale_sec = max(
+            0.05, float(self.get_parameter("pitch_stale_sec").value)
+        )
+        self._pitch_rad: float = 0.0
+        self._pitch_rx_sec: float | None = None
         # Latest measured ω for [FL,FR,RL,RR]_foot_joint (rad/s). Defaults
         # to zeros so the first few ticks (before joint_states arrives)
         # behave like the legacy "cmd=0 in legged" path.
@@ -288,6 +322,9 @@ class Go2WHybridCmdRouter(Node):
                 self.create_subscription(
                     String, self.ramp_goal_mode_topic, self._ramp_goal_mode_cb, 10
                 )
+        if self.pitch_force_wheel_enabled:
+            pitch_odom_topic = str(self.get_parameter("pitch_odom_topic").value)
+            self.create_subscription(Odometry, pitch_odom_topic, self._odom_cb, 10)
         self._legged_pub = self.create_publisher(Twist, legged_topic, 10)
         self._wheel_pub = self.create_publisher(Float64MultiArray, wheel_command_topic, 10)
         self._status_pub = self.create_publisher(String, status_topic, 10)
@@ -297,6 +334,14 @@ class Go2WHybridCmdRouter(Node):
             "Go2W hybrid cmd router started: "
             f"{input_topic} -> {legged_topic} | {wheel_command_topic}"
         )
+        if self.pitch_force_wheel_enabled:
+            self.get_logger().info(
+                "Pitch force-wheel enabled: "
+                f"odom={self.get_parameter('pitch_odom_topic').value} "
+                f"|pitch|>{math.degrees(self.pitch_force_wheel_threshold_rad):.1f}deg "
+                f"-> sustained wheel, climb_vx={self.pitch_climb_vx_mps:.2f} "
+                f"|wz|<={self.pitch_climb_max_yaw_rate_rps:.2f}"
+            )
         if self.ramp_force_legged_enabled:
             self.get_logger().info(
                 "Ramp force-legged enabled: "
@@ -365,7 +410,7 @@ class Go2WHybridCmdRouter(Node):
     def _requested_mode(self, cmd: Twist, now_sec: float) -> tuple[str, float]:
         """Return (mode, curvature) — curvature surfaced so the selector can
         bypass mode hold for emergency U-turns (high κ legged demands)."""
-        if self._ramp_force_wheel_active(now_sec):
+        if self._ramp_force_wheel_active(now_sec) or self._pitch_force_wheel_active(now_sec):
             self._wheel_eligible_since_sec = now_sec - self.wheel_engage_sustain_sec
             linear_x = abs(float(cmd.linear.x))
             angular_z = abs(float(cmd.angular.z))
@@ -408,6 +453,29 @@ class Go2WHybridCmdRouter(Node):
             self._wheel_eligible_since_sec = None
 
         return ("legged", curvature)
+
+    def _odom_cb(self, msg: Odometry) -> None:
+        q = msg.pose.pose.orientation
+        # body pitch from the orientation quaternion (rotation about y).
+        sinp = 2.0 * (q.w * q.y - q.z * q.x)
+        sinp = max(-1.0, min(1.0, sinp))
+        pitch = math.asin(sinp)
+        # EMA low-pass: the legged gait bobs the body ±3-5° around 0, which
+        # would false-trigger force-wheel on flat ground. Filtering averages
+        # the oscillation toward 0 while preserving a ramp's SUSTAINED tilt, so
+        # a modest threshold cleanly separates "on a slope" from "gait bob".
+        self._pitch_rad = (
+            self.pitch_ema_alpha * pitch
+            + (1.0 - self.pitch_ema_alpha) * self._pitch_rad
+        )
+        self._pitch_rx_sec = self._now_sec()
+
+    def _pitch_force_wheel_active(self, now_sec: float) -> bool:
+        if not self.pitch_force_wheel_enabled or self._pitch_rx_sec is None:
+            return False
+        if now_sec - self._pitch_rx_sec > self.pitch_stale_sec:
+            return False
+        return abs(self._pitch_rad) > self.pitch_force_wheel_threshold_rad
 
     def _ramp_force_active(self, now_sec: float) -> bool:
         if not self.ramp_force_legged_enabled:
@@ -466,7 +534,10 @@ class Go2WHybridCmdRouter(Node):
         if requested_mode == self._active_mode:
             return requested_mode
 
-        if requested_mode == "wheel" and self._ramp_force_wheel_active(now_sec):
+        if requested_mode == "wheel" and (
+            self._ramp_force_wheel_active(now_sec)
+            or self._pitch_force_wheel_active(now_sec)
+        ):
             return requested_mode
 
         if requested_mode == "legged" and self._ramp_force_active(now_sec):
@@ -549,6 +620,24 @@ class Go2WHybridCmdRouter(Node):
                 ramp_cmd.linear.y = vy
                 ramp_cmd.angular.z = wz
                 wheel_cmd = self._wheel_command(ramp_cmd)
+            elif self._pitch_force_wheel_active(now_sec):
+                # On a slope: floor the forward speed so the wheels drive
+                # briskly up the incline instead of stalling at MPPI's cautious
+                # creep. Only when MPPI still intends forward + a fresh cmd —
+                # never force forward when it wants to stop/reverse. Cap yaw so
+                # the climb stays roughly straight (oblique climbs risk tipping).
+                raw_vx = float(self._last_cmd.linear.x)
+                if self._is_recent(now_sec) and raw_vx > self.thresholds.idle_linear:
+                    vx = max(raw_vx, self.pitch_climb_vx_mps)
+                else:
+                    vx = max(0.0, raw_vx)
+                wz = max(-self.pitch_climb_max_yaw_rate_rps,
+                         min(self.pitch_climb_max_yaw_rate_rps,
+                             float(self._last_cmd.angular.z)))
+                climb_cmd = Twist()
+                climb_cmd.linear.x = vx
+                climb_cmd.angular.z = wz
+                wheel_cmd = self._wheel_command(climb_cmd)
             else:
                 wheel_cmd = self._wheel_command(self._last_cmd)
         elif self._active_mode == "legged":

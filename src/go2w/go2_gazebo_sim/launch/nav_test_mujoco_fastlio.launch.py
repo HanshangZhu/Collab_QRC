@@ -268,12 +268,17 @@ def _launch_setup(context):
                 "has_wheels": _get(context, "has_wheels"),
                 "rl_policy": _get(context, "rl_policy"),
                 "rl_use_champ_gains": _get(context, "rl_use_champ_gains"),
+                "rl_model_path": _get(context, "rl_model_path"),
+                "rl_sar_config": _get(context, "rl_sar_config"),
                 "ramp_force_legged_enabled": LaunchConfiguration("ramp_force_legged_enabled"),
                 "ramp_force_wheel_enabled": LaunchConfiguration("ramp_force_wheel_enabled"),
                 "ramp_goal_mode_topic": LaunchConfiguration("ramp_goal_mode_topic"),
                 "ramp_goal_stale_sec": LaunchConfiguration("ramp_goal_stale_sec"),
                 "ramp_force_max_vx_mps": LaunchConfiguration("ramp_force_max_vx_mps"),
                 "ramp_force_max_yaw_rate_rps": LaunchConfiguration("ramp_force_max_yaw_rate_rps"),
+                "pitch_force_wheel_enabled": LaunchConfiguration("pitch_force_wheel_enabled"),
+                "pitch_force_wheel_threshold_rad": LaunchConfiguration("pitch_force_wheel_threshold_rad"),
+                "pitch_climb_vx_mps": LaunchConfiguration("pitch_climb_vx_mps"),
             }.items(),
         )
     )
@@ -1238,12 +1243,24 @@ def generate_launch_description():
                               "kp=100/kd=1.0 PD gains instead of the training kp=20/kd=0.5. "
                               "Allows the pre-RL stand-up trajectory to hold the robot "
                               "upright at the cost of 5× policy torque overshoot."),
+        DeclareLaunchArgument("rl_model_path", default_value="",
+                              description="With rl_policy:=true, absolute path to the "
+                              "ONNX policy. Empty = node default (flat_policy_v6, 45-dim). "
+                              "Pass a 49-dim rough policy for ramp climbs. See "
+                              "single_go2w_mujoco_cfpa2.launch.py for full notes."),
+        DeclareLaunchArgument("rl_sar_config", default_value="",
+                              description="With rl_policy:=true, path to an rl_sar policy "
+                              "dir (config.yaml + .pt) → runs the config-driven "
+                              "go2_rl_sar_node. Takes precedence over rl_model_path."),
         DeclareLaunchArgument("ramp_force_legged_enabled", default_value="false"),
         DeclareLaunchArgument("ramp_force_wheel_enabled", default_value="false"),
         DeclareLaunchArgument("ramp_goal_mode_topic", default_value=""),
         DeclareLaunchArgument("ramp_goal_stale_sec", default_value="1.5"),
         DeclareLaunchArgument("ramp_force_max_vx_mps", default_value="0.30"),
         DeclareLaunchArgument("ramp_force_max_yaw_rate_rps", default_value="0.20"),
+        DeclareLaunchArgument("pitch_force_wheel_enabled", default_value="false"),
+        DeclareLaunchArgument("pitch_force_wheel_threshold_rad", default_value="0.070"),
+        DeclareLaunchArgument("pitch_climb_vx_mps", default_value="0.45"),
         DeclareLaunchArgument(
             "cfpa2_executable_suffix",
             default_value="",

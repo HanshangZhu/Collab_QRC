@@ -400,10 +400,10 @@
     <motor class="back_hip" name="RR_thigh" joint="RR_thigh_joint"/>
     <motor class="knee" name="RR_calf" joint="RR_calf_joint"/>
 
-    <velocity name="FL_wheel" joint="FL_foot_joint" ctrlrange="-15 15" kv="5.0"/>
-    <velocity name="FR_wheel" joint="FR_foot_joint" ctrlrange="-15 15" kv="5.0"/>
-    <velocity name="RL_wheel" joint="RL_foot_joint" ctrlrange="-15 15" kv="5.0"/>
-    <velocity name="RR_wheel" joint="RR_foot_joint" ctrlrange="-15 15" kv="5.0"/>
+    <velocity name="FL_wheel" joint="FL_foot_joint" ctrlrange="-15 15" kv="8.0"/>
+    <velocity name="FR_wheel" joint="FR_foot_joint" ctrlrange="-15 15" kv="8.0"/>
+    <velocity name="RL_wheel" joint="RL_foot_joint" ctrlrange="-15 15" kv="8.0"/>
+    <velocity name="RR_wheel" joint="RR_foot_joint" ctrlrange="-15 15" kv="8.0"/>
   </actuator>
 
   <!-- Sensors -->
