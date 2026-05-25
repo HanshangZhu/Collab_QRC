@@ -2201,7 +2201,13 @@ def _launch_setup(context):
         use_mujoco=True,
         controller_manager_name=f"/{sim_ns}/controller_manager",
     )
-    actions.append(TimerAction(period=10.0, actions=robot_b_stack))
+    # robot_b staggered well after robot_a (was 10.0 = only 3s after A's 7.0):
+    # both robots' Nav2 controller_server/local_costmap were configuring
+    # near-simultaneously (~1s apart), which intermittently deadlocks the
+    # second robot's costmap lifecycle transition (logs "Creating Costmap"
+    # then never "Configuring") -> robot_b never activates -> never navigates.
+    # robot_a needs ~7s costmap-create -> active; 24s gives clear separation.
+    actions.append(TimerAction(period=24.0, actions=robot_b_stack))
 
     # ── Per-robot Fast-LIO + FAR nav stacks ──
     slam_delay = 20.0   # after both standups complete
