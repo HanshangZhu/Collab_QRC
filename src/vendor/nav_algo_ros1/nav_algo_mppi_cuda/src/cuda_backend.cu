@@ -316,52 +316,15 @@ void CudaBackend::optimize(mppi::Optimizer & opt)
     return dist_to_goal_sq < static_cast<double>(threshold) * threshold;
   };
 
-  // furthest_reached_path_point — index of closest path pose to robot.
-  // Mirrors utils::setPathFurthestPointIfNotSet. O(P) walk.
-  unsigned int furthest_reached = 0;
-  {
-    double min_d2 = 1e30;
-    for (unsigned int i = 0; i < P; ++i) {
-      const float dx = robot_x - path.x(i);
-      const float dy = robot_y - path.y(i);
-      const double d2 = static_cast<double>(dx) * dx + static_cast<double>(dy) * dy;
-      if (d2 < min_d2) { min_d2 = d2; furthest_reached = i; }
-    }
-  }
-
-  // PathAlign's max_path_occupancy_ratio gate.
-  bool path_align_invalid_gate_open = true;
-  if (P > 1 && furthest_reached > 0) {
-    unsigned int invalid_ctr = 0;
-    const unsigned int closest_initial = 0;  // simplification: scan from start
-    for (unsigned int i = closest_initial; i < furthest_reached; ++i) {
-      if (!pts_valid[i]) invalid_ctr++;
-    }
-    const float range = std::max(
-      static_cast<float>(furthest_reached - closest_initial), 1.0f);
-    if (static_cast<float>(invalid_ctr) / range >
-        crit_.path_align_max_path_occupancy && invalid_ctr > 2)
-    {
-      path_align_invalid_gate_open = false;
-    }
-  }
-
-  // PathAngleCritic's posePointAngle gate — angle from robot heading to
-  // target offset path point. Default (forward_preference=true) variant.
-  bool path_angle_gate_open = !within_goal(crit_.path_angle_threshold);
-  if (path_angle_gate_open && P > 0) {
-    const unsigned int offseted = std::min(
-      furthest_reached + crit_.path_angle_offset_from_furthest, P - 1);
-    const float dx = path.x(offseted) - robot_x;
-    const float dy = path.y(offseted) - robot_y;
-    const float angle_to_target = std::atan2(dy, dx);
-    float ad = angle_to_target - robot_yaw;
-    while (ad > M_PI)  ad -= 2.0f * M_PI;
-    while (ad <= -M_PI) ad += 2.0f * M_PI;
-    if (std::fabs(ad) < crit_.path_angle_max_angle_to_furthest) {
-      path_angle_gate_open = false;
-    }
-  }
+  // NOTE: furthest_reached_path_point and the PathAlign/PathAngle gates that
+  // depend on it are computed INSIDE the iteration loop, right after the
+  // integrate kernel (block "1b" below) — they need the integrated trajectory
+  // ENDPOINTS to faithfully mirror nav2 utils::findPathFurthestReachedPoint
+  // (max over the bundle of each trajectory-end's closest path index). The
+  // earlier "closest path point to the current robot pose" version pinned the
+  // PathFollow carrot ~offset_from_furthest points ahead of the robot forever,
+  // killing the speed feedback loop and capping vx at ~carrot_dist/horizon
+  // (≈0.1 m/s) regardless of path length / costmap.
 
   // ObstaclesCritic's near_goal flag (controls whether repulsion runs).
   const bool near_goal = within_goal(crit_.obs_near_goal_distance);
@@ -404,6 +367,73 @@ void CudaBackend::optimize(mppi::Optimizer & opt)
           icfg, d_state_vx_, holonomic ? d_state_vy_.get() : nullptr, d_state_wz_,
           d_traj_x_, d_traj_y_, d_traj_yaws_),
         "integrate");
+    }
+
+    // ── 1b. furthest_reached_path_point — FAITHFUL port of nav2
+    // utils::findPathFurthestReachedPoint: for each trajectory find the path
+    // index closest to that trajectory's ENDPOINT, then take the MAX index
+    // across the bundle. Computed here (after integrate) because it needs the
+    // integrated traj endpoints; cudaMemcpy2D pulls the last-timestep column
+    // (one float per trajectory, stride T). This is what advances the
+    // PathFollow carrot as the bundle reaches further down the path, restoring
+    // the speed feedback loop the pre-loop closest-to-robot version had killed.
+    unsigned int furthest_reached = 0;
+    if (P > 0) {
+      std::vector<float> end_x(B), end_y(B);
+      cudaCheck(cudaMemcpy2D(
+        end_x.data(), sizeof(float),
+        d_traj_x_.get() + (T - 1), static_cast<size_t>(T) * sizeof(float),
+        sizeof(float), static_cast<size_t>(B), cudaMemcpyDeviceToHost),
+        "D2H traj end_x");
+      cudaCheck(cudaMemcpy2D(
+        end_y.data(), sizeof(float),
+        d_traj_y_.get() + (T - 1), static_cast<size_t>(T) * sizeof(float),
+        sizeof(float), static_cast<size_t>(B), cudaMemcpyDeviceToHost),
+        "D2H traj end_y");
+      for (unsigned int b = 0; b < B; ++b) {
+        const float ex = end_x[b];
+        const float ey = end_y[b];
+        unsigned int min_id = 0;
+        double min_d2 = 1e30;
+        for (unsigned int j = 0; j < P; ++j) {
+          const float dx = ex - path.x(j);
+          const float dy = ey - path.y(j);
+          const double d2 = static_cast<double>(dx) * dx + static_cast<double>(dy) * dy;
+          if (d2 < min_d2) { min_d2 = d2; min_id = j; }
+        }
+        if (min_id > furthest_reached) furthest_reached = min_id;
+      }
+    }
+
+    // PathAlign's max_path_occupancy_ratio gate (depends on furthest_reached).
+    bool path_align_invalid_gate_open = true;
+    if (P > 1 && furthest_reached > 0) {
+      unsigned int invalid_ctr = 0;
+      for (unsigned int i = 0; i < furthest_reached; ++i) {
+        if (!pts_valid[i]) invalid_ctr++;
+      }
+      const float range = std::max(static_cast<float>(furthest_reached), 1.0f);
+      if (static_cast<float>(invalid_ctr) / range >
+          crit_.path_align_max_path_occupancy && invalid_ctr > 2)
+      {
+        path_align_invalid_gate_open = false;
+      }
+    }
+
+    // PathAngleCritic's posePointAngle gate (depends on furthest_reached).
+    bool path_angle_gate_open = !within_goal(crit_.path_angle_threshold);
+    if (path_angle_gate_open && P > 0) {
+      const unsigned int offseted = std::min(
+        furthest_reached + crit_.path_angle_offset_from_furthest, P - 1);
+      const float dx = path.x(offseted) - robot_x;
+      const float dy = path.y(offseted) - robot_y;
+      const float angle_to_target = std::atan2(dy, dx);
+      float ad = angle_to_target - robot_yaw;
+      while (ad > M_PI)  ad -= 2.0f * M_PI;
+      while (ad <= -M_PI) ad += 2.0f * M_PI;
+      if (std::fabs(ad) < crit_.path_angle_max_angle_to_furthest) {
+        path_angle_gate_open = false;
+      }
     }
 
     cudaCheck(cudaMemset(d_costs_.get(), 0, B * sizeof(float)), "memset costs");

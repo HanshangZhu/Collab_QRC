@@ -285,6 +285,7 @@ YAML + Python are live via symlink-install; C++ requires rebuild.
 7. Real-robot: any Unitree BT pad button press latches a 5 s **supervisor-panic** window — auto `cmd_vel` blocked, FAR disarmed, sticks drive directly. See [real_robot.md](docs/claude/real_robot.md#supervisor-panic-override-any-button-emergency).
 8. **MPPI footprint:** with `consider_footprint: false` (the default), MPPI uses `robot_radius + collision_margin_distance` as the rejection zone. Set `consider_footprint: true` + a polygon `footprint:` on both costmaps for narrow corridors. See [CLAUDE.md golden rule 14](CLAUDE.md).
 9. **Outer-loop `stuck_watchdog` is required** — Nav2's BT recovery rarely fires because MPPI/DWB self-report success while emitting (v ≈ 0, ω ≈ 0). The per-namespace watchdog catches the silent stalls.
+10. **MPPI cruise speed = the PathFollow carrot.** Forward speed emerges from PathFollowCritic chasing `furthest_reached_path_point + offset_from_furthest`, where `furthest_reached` must be the MAX over the trajectory **bundle's endpoints** (`findPathFurthestReachedPoint`). If it's computed as closest-to-robot instead, the carrot pins ~offset cells ahead and MPPI creeps at `~carrot_dist/horizon` (≈0.1 m/s) regardless of path/costmap. Go2W `vx_max=0.40` keeps cruise below the 0.5–0.6 m/s wheel↔legged gait-switch tip zone. See [CLAUDE.md golden rule 25](CLAUDE.md).
 
 ## Debugging
 

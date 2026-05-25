@@ -186,7 +186,11 @@ controller_server:
       vx_std: 0.20
       vy_std: 0.20
       wz_std: 0.40
-      vx_max: 0.50
+      # Capped 0.50 → 0.40 to keep cruise a margin below the lethal 0.5–0.6
+      # wheel↔legged gait-switch zone (switching gait at high momentum tips the
+      # robot). With the PathFollow-carrot fix MPPI now actually reaches vx_max,
+      # so this cap is what bounds the achievable speed; switches stay ≤0.40.
+      vx_max: 0.40
       vx_min: -0.20      # allow brief reverse for tight maneuvers
       vy_max: 0.0        # diff-drive — no strafe in routing layer
       wz_max: 1.0

@@ -7,10 +7,18 @@
     idle_lateral_threshold: 0.02
     idle_angular_threshold: 0.05
 
-    wheel_linear_threshold: 0.18
+    # Lowered 0.18 → 0.10 so wheel mode engages on moderate forward motion,
+    # not just brisk highways. Turning gates (angular/curvature) unchanged so
+    # turns still route to legged — preserves the no-skid-steer-pivot guard.
+    wheel_linear_threshold: 0.10
     wheel_lateral_threshold: 0.05
     wheel_angular_threshold: 0.30
     wheel_curvature_threshold: 0.45
+
+    # Continuous wheel-eligible time before engaging (disengage is immediate).
+    # Lowered from the router default 0.5 → 0.25 so wheel engages faster once
+    # MPPI settles into a forward run.
+    wheel_engage_sustain_sec: 0.25
 
     # Reduced 1.2 → 0.5 so the router switches out of wheel mode faster
     # when astar commands a sharp turn. Previously a cruising robot that
