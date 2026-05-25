@@ -223,4 +223,5 @@ done
 
 echo "=== aggregating ==="
 python3 "$WS_DIR/scripts/bench/summarize_dropout_benchmark.py" "$OUT_DIR" | tee "$OUT_DIR/summary.txt"
+python3 "$WS_DIR/scripts/bench/plot_coverage_curves.py" "$OUT_DIR" --horizon "$DURATION_SEC" || true
 echo "=== done: $OUT_DIR ==="
