@@ -135,14 +135,33 @@ except Exception:
     wait "$logger_pid" 2>/dev/null || true
 
     kill "$mon_pid" 2>/dev/null || true
+    # SIGKILL the launch FIRST so it stops respawning its nodes. The mixed launch
+    # has respawn=True nodes; if we pkill children while `ros2 launch` lives, they
+    # respawn faster than we can reap them. Orphaned sims that survive a trial
+    # accumulate and break the NEXT trial's Nav2 activation ("stack not ready"),
+    # which is what degraded earlier full runs. (pkill is process-wide -> do NOT
+    # run two benchmark drivers on one machine.)
+    kill -9 "$launch_pid" 2>/dev/null || true
     "$WS_DIR/scripts/debug/kill_sim.sh" >/dev/null 2>&1 || true
-    kill "$launch_pid" 2>/dev/null || true
-    # kill_sim doesn't know about these benchmark-scaffolding nodes; without an
-    # explicit kill they orphan and accumulate DDS participants across trials,
-    # degrading Nav2 controller_server activation in later trials. (Do NOT run
-    # two benchmark drivers on one machine — this pkill is process-wide.)
-    pkill -9 -f comms_dropout_relay.py 2>/dev/null || true
-    pkill -9 -f odom_divergence_monitor.py 2>/dev/null || true
+    # Reap all sim/scaffolding processes and VERIFY clean before the next trial.
+    local w
+    for ((w=0; w<25; w++)); do
+        pkill -9 -f "ros2 launch go2_gazebo" 2>/dev/null || true
+        pkill -9 -f mujoco_ros2_control 2>/dev/null || true
+        pkill -9 -f cfpa2_coordinator 2>/dev/null || true
+        pkill -9 -f cfpa2_single_robot 2>/dev/null || true
+        pkill -9 -f peer_coordinator 2>/dev/null || true
+        pkill -9 -f fast_lio 2>/dev/null || true
+        pkill -9 -f comms_dropout_relay.py 2>/dev/null || true
+        pkill -9 -f odom_divergence_monitor.py 2>/dev/null || true
+        pkill -9 -f exploration_metrics_logger.py 2>/dev/null || true
+        sleep 1
+        if [ "$(ps -eo args | grep -c '[m]ujoco_ros2_control')" -eq 0 ] && \
+           [ "$(ps -eo args | grep -c 'ros2 launch go[2]_gazebo')" -eq 0 ]; then
+            break
+        fi
+    done
+    find /dev/shm -maxdepth 1 -iname '*fast*' -delete 2>/dev/null || true
     sleep 2
 
     if [ "$(verdict_diverged "$tdir/divergence.json")" = "true" ]; then
