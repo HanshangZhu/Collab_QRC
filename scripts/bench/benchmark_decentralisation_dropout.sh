@@ -67,7 +67,12 @@ run_one_attempt() {  # $1=mode $2=drop $3=tdir $4=seed -> 0 valid, 1 diverged/fa
     sleep 3
     rm -f "$tdir/divergence.json" "$tdir"/exploration_*.csv
 
-    $LAUNCH gui:=false rviz:=false explore:=true exploration_planner:=cfpa2 \
+    # setsid: run the launch in its OWN session/process group so teardown can
+    # kill the WHOLE tree (mujoco, map_augmenter, multirobot_map_merge, octomap,
+    # nav2 servers, fast_lio, ...). Plain `kill $launch_pid` orphans those, and
+    # surviving map/merge nodes leak a stale /merged_map into the next trial ->
+    # coverage starts pre-filled (the cross-trial coverage leak).
+    setsid $LAUNCH gui:=false rviz:=false explore:=true exploration_planner:=cfpa2 \
         coordination_mode:="$mode" cfpa2_executable_suffix:="$CFPA2_SUFFIX" \
         comms_dropout:="$drop" dropout_seed:="$seed" \
         metrics_logger:=false cleanup_stale:=false \
@@ -135,29 +140,33 @@ except Exception:
     wait "$logger_pid" 2>/dev/null || true
 
     kill "$mon_pid" 2>/dev/null || true
-    # SIGKILL the launch FIRST so it stops respawning its nodes. The mixed launch
-    # has respawn=True nodes; if we pkill children while `ros2 launch` lives, they
-    # respawn faster than we can reap them. Orphaned sims that survive a trial
-    # accumulate and break the NEXT trial's Nav2 activation ("stack not ready"),
-    # which is what degraded earlier full runs. (pkill is process-wide -> do NOT
-    # run two benchmark drivers on one machine.)
+    # Kill the launch's ENTIRE process group (setsid put it in its own session,
+    # so its PGID == launch_pid). This reaps every descendant by ancestry, not by
+    # name -- mujoco, map_augmenter, multirobot_map_merge, octomap, nav2 servers,
+    # fast_lio, relays, EVERYTHING -- in one shot. Guard: only group-kill if the
+    # PGID differs from this driver's own, so a setsid hiccup can't kill us.
+    local lpg dpg
+    lpg="$(ps -o pgid= -p "$launch_pid" 2>/dev/null | tr -d ' ')"
+    dpg="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+    if [ -n "$lpg" ] && [ "$lpg" != "$dpg" ]; then
+        kill -9 -- -"$lpg" 2>/dev/null || true
+    fi
     kill -9 "$launch_pid" 2>/dev/null || true
     "$WS_DIR/scripts/debug/kill_sim.sh" >/dev/null 2>&1 || true
-    # Reap all sim/scaffolding processes and VERIFY clean before the next trial.
+    # Backup pattern reap + VERIFY clean (incl. map nodes — their survival is what
+    # leaked stale /merged_map into later trials) before the next trial starts.
     local w
     for ((w=0; w<25; w++)); do
-        pkill -9 -f "ros2 launch go2_gazebo" 2>/dev/null || true
-        pkill -9 -f mujoco_ros2_control 2>/dev/null || true
-        pkill -9 -f cfpa2_coordinator 2>/dev/null || true
-        pkill -9 -f cfpa2_single_robot 2>/dev/null || true
-        pkill -9 -f peer_coordinator 2>/dev/null || true
-        pkill -9 -f fast_lio 2>/dev/null || true
-        pkill -9 -f comms_dropout_relay.py 2>/dev/null || true
-        pkill -9 -f odom_divergence_monitor.py 2>/dev/null || true
-        pkill -9 -f exploration_metrics_logger.py 2>/dev/null || true
+        for p in "ros2 launch go2_gazebo" mujoco_ros2_control map_augmenter \
+                 multirobot_map_merge octomap cfpa2_coordinator cfpa2_single_robot \
+                 peer_coordinator fast_lio comms_dropout_relay.py \
+                 odom_divergence_monitor.py exploration_metrics_logger.py; do
+            pkill -9 -f "$p" 2>/dev/null || true
+        done
         sleep 1
         if [ "$(ps -eo args | grep -c '[m]ujoco_ros2_control')" -eq 0 ] && \
-           [ "$(ps -eo args | grep -c 'ros2 launch go[2]_gazebo')" -eq 0 ]; then
+           [ "$(ps -eo args | grep -c 'ros2 launch go[2]_gazebo')" -eq 0 ] && \
+           [ "$(ps -eo args | grep -c '[m]ap_augmenter')" -eq 0 ]; then
             break
         fi
     done
