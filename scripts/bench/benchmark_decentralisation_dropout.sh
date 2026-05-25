@@ -75,9 +75,10 @@ run_one_attempt() {  # $1=mode $2=drop $3=tdir $4=seed -> 0 valid, 1 diverged/fa
     # Wait for Nav2 to activate. Log-based, NOT `ros2 topic list`: external ros2
     # CLI discovery is flaky in this env and can hang indefinitely. Each robot's
     # nav lifecycle_manager logs "Managed nodes are active" once on activation.
-    local ready=0 i
+    local ready=0 i active
     for ((i=0; i<READY_TIMEOUT; i++)); do
-        if [ "$(grep -c 'Managed nodes are active' "$tdir/launch.log" 2>/dev/null || echo 0)" -ge 2 ]; then ready=1; break; fi
+        active="$(grep -c 'Managed nodes are active' "$tdir/launch.log" 2>/dev/null)"
+        if [ "${active:-0}" -ge 2 ]; then ready=1; break; fi
         if ! kill -0 "$launch_pid" 2>/dev/null; then break; fi
         sleep 1
     done
