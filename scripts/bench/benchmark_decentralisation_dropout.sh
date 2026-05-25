@@ -30,6 +30,8 @@ MAX_RETRIES="${MAX_RETRIES:-3}"
 DIVERGENCE_BOUND_M="${DIVERGENCE_BOUND_M:-60.0}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 MIN_PROGRESS_M="${MIN_PROGRESS_M:-3.0}"  # reject trials where neither robot moved (Nav2 didn't activate)
+EARLY_CHECK_SEC="${EARLY_CHECK_SEC:-90}"  # when to check for early no-movement
+EARLY_MIN_M="${EARLY_MIN_M:-2.0}"         # min robot traj by EARLY_CHECK_SEC, else abort+rerun (no goals delivered)
 OUT_DIR="${OUT_DIR:-/tmp/dropout_bench/$(date +%Y%m%d_%H%M%S)}"
 MUJOCO_LIB="${MUJOCO_LIB:-/home/hanszhu/miniforge3/envs/cmu_env/lib/python3.10/site-packages/mujoco}"
 mkdir -p "$OUT_DIR"
@@ -97,13 +99,40 @@ run_one_attempt() {  # $1=mode $2=drop $3=tdir $4=seed -> 0 valid, 1 diverged/fa
         > "$tdir/divergence.log" 2>&1 &
     local mon_pid=$!
 
-    # Metrics logger (foreground) in union mode for DURATION_SEC sim-seconds.
+    # Metrics logger (background) in union mode for DURATION_SEC sim-seconds.
+    # It writes exploration_trial_*.csv incrementally (1 Hz), so we can poll it
+    # for early no-movement detection.
     timeout "$DURATION_SEC" ros2 run go2w_observability exploration_metrics_logger.py \
         --ros-args -p use_sim_time:=true -p global_coverage_source:=union \
         -p scene_area_m2:="$SCENE_AREA_M2" -p namespaces:="$RELAY_NS" \
         -p output_dir:="$tdir" -p experiment_name:=trial \
         -p enable_stop_trigger:=false \
-        > "$tdir/metrics.log" 2>&1 || true
+        > "$tdir/metrics.log" 2>&1 &
+    local logger_pid=$!
+
+    # Early no-movement abort: a good trial has robots moving within ~tens of
+    # seconds of nav activation; a failed one (CFPA2 goals never reach Nav2)
+    # sits at spawn the whole time. Check once at EARLY_CHECK_SEC and kill the
+    # logger early if neither robot has moved > EARLY_MIN_M, so we rerun in
+    # ~EARLY_CHECK_SEC instead of wasting the full DURATION_SEC.
+    sleep "$EARLY_CHECK_SEC"
+    if kill -0 "$logger_pid" 2>/dev/null; then
+        local ecsv emax
+        ecsv="$(ls -t "$tdir"/exploration_trial_*.csv 2>/dev/null | head -1)"
+        emax="$(python3 -c "
+import csv
+try:
+    r=list(csv.DictReader(open('$ecsv')))
+    l=r[-1]
+    print(max(float(l.get('robot_a_trajectory_m',0) or 0), float(l.get('robot_b_trajectory_m',0) or 0)))
+except Exception:
+    print(0.0)" 2>/dev/null)"
+        if python3 -c "import sys; sys.exit(0 if float('${emax:-0}') < $EARLY_MIN_M else 1)"; then
+            echo "    [!] early-abort at ${EARLY_CHECK_SEC}s: max robot traj ${emax} m < ${EARLY_MIN_M} m (no goals delivered)"
+            kill "$logger_pid" 2>/dev/null || true
+        fi
+    fi
+    wait "$logger_pid" 2>/dev/null || true
 
     kill "$mon_pid" 2>/dev/null || true
     "$WS_DIR/scripts/debug/kill_sim.sh" >/dev/null 2>&1 || true
