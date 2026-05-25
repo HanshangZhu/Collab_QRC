@@ -34,6 +34,22 @@ colcon build --symlink-install --packages-select nav2_mppi_controller_cuda_plugi
 
 Both yaml changes are live via symlink-install (no rebuild); the `.cu` fix needs the rebuild above + a sim restart to load the new `.so`.
 
+### Measured CUDA-MPPI A/B on the Orin Nano — corrects the 80× projection
+
+The 2026-05-19 entry projected **~80×** end-to-end on the Orin ("to be confirmed by an actual Orin run; back-of-envelope"). Confirmed by direct measurement: nvcc-compiled the self-contained per-kernel benches (`integrate_bench` / `critics_bench` / `control_update_bench`, no ROS deps) natively on the Orin Nano 8 GB HIL bench (`johnpork233@192.168.55.49`, sm_87, CUDA 12.6, `jetson_clocks` + nvpmodel max). 2 runs, all kernels PASS (max |Δ| ≤ 1.5e-5):
+
+| | CPU | GPU | speedup |
+|---|---|---|---|
+| integrate | 2.24 ms | 0.18 ms | 13× |
+| **PathAngleCritic** | **6.69 ms** | **0.085 ms** | **79×** (dominates both sides) |
+| 7 other critics | ~3.2 ms | ~0.8 ms | 1.5–11× |
+| cost-shape/softmax/wavg | 0.51 ms | 0.15 ms | 2–6× |
+| **TOTAL kernel chain** | **~12.0 ms** | **~1.15 ms** | **~10.4×** |
+
+**Real Orin speedup ≈ 10×, NOT 50× (RTX 4050 laptop microbench) and NOT 80× (projection).** Why the projection was wrong on both ends: it assumed Orin CPU ≈ 60 ms (laptop 12 ms × 5 for a "weaker CPU"), but the A78AE @ 1.5 GHz measures **~12 ms** — same workload, not 5× slower; and it assumed GPU 0.75 ms vs the measured **1.15 ms** (Nano GPU weaker than assumed). Both errors compounded. (Orin NX 16 GB — the real Go2 — has a faster GPU clock + 8 cores @ 2.0 GHz → est. ~12–15×, still nowhere near 80×.)
+
+**Honest framing — CUDA-MPPI is NOT a real-time rescue; it's a CPU-offload.** 12 ms CPU sits at ~24 % of the 50 ms @ 20 Hz budget — *both* CPU and GPU MPPI hit 20 Hz at our B=2000/T=56. The genuine "CPU starvation → real-time" fix is the **CFPA2 C++ port (1376 ms → 1.1 ms, ~1250×, 27× over its 500 ms budget)** — that one actually crossed the budget. CUDA-MPPI's real value: it moves MPPI's ~12 ms/cycle (plus CPU noise-gen + the 2000×56 trajectory integration the bench doesn't even count) **off the contended CPU and onto the otherwise-idle GPU (<19 %)**, freeing CPU cores for the latency-critical Point-LIO SLAM loop + CFPA2. That's an architecture/headroom win and robustness-under-contention + room to scale B/T — not a timing rescue. The contention benefit itself is unmeasured (would need an on-robot full-stack CPU-MPPI vs GPU-MPPI A/B). Caveat: the ~10× is the kernel chain (same scope as the original 12 ms → 0.25 ms claim); the true full-cycle `optimize()` ratio is lower (H2D/D2H on the Orin's slower bus + shared CPU noise-gen).
+
 ## Active state (2026-05-20 night) — FULL autonomy stack running NATIVE on the real Go2 Orin NX (ROS 1 Noetic, no bridge) — verified real-time end-to-end
 
 **The milestone:** the entire autonomy stack now runs **onboard the real Go2's Jetson Orin NX 16 GB** in native ROS 1 Noetic — SLAM (Point-LIO) + traversability (elevation_mapping_cupy + CNN) + Nav2-port nav (SmacLattice global + **CUDA-MPPI** local via `move_base`) + CFPA2 frontier exploration (C++). No ros1_bridge in the data path; the laptop is only NAT internet + SSH (+ RViz2 during HIL). Consolidated catkin workspace at `/home/unitree/autonomous_exploration_zhu/`, mirrored to the repo at [`jetson_ws/`](jetson_ws/README.md).

@@ -20,6 +20,9 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <xtensor/xmath.hpp>
 #include <xtensor/xrandom.hpp>
 #include <xtensor/xnoalias.hpp>
@@ -159,8 +162,23 @@ void Optimizer::optimize()
   // backend is responsible for fulfilling Optimizer::optimize()'s contract
   // (final state_, generated_trajectories_, costs_, control_sequence_, plus
   // applying control-sequence constraints).
+  // Env-gated per-cycle timing probe (MPPI_TIME_CSV=/path): wraps BOTH the CUDA
+  // and CPU branches identically so the A/B is apples-to-apples wall time of one
+  // optimize() iteration (incl. CPU noise-gen + H2D/D2H for the CUDA path). Off
+  // by default — zero overhead when the env var is unset.
+  const char * mppi_time_csv = std::getenv("MPPI_TIME_CSV");
+  std::chrono::steady_clock::time_point mppi_t0;
+  if (mppi_time_csv) {mppi_t0 = std::chrono::steady_clock::now();}
+  auto mppi_log = [&](const char * tag) {
+    if (!mppi_time_csv) {return;}
+    const double us = std::chrono::duration<double, std::micro>(
+      std::chrono::steady_clock::now() - mppi_t0).count();
+    std::ofstream(mppi_time_csv, std::ios::app) << tag << ',' << us << '\n';
+  };
+
   if (cuda_backend_) {
     cuda_backend_->optimize(*this);
+    mppi_log("cuda");
     return;
   }
   for (size_t i = 0; i < settings_.iteration_count; ++i) {
@@ -168,6 +186,7 @@ void Optimizer::optimize()
     critic_manager_.evalTrajectoriesScores(critics_data_);
     updateControlSequence();
   }
+  mppi_log("cpu");
 }
 
 bool Optimizer::fallback(bool fail)

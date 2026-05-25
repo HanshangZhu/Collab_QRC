@@ -25,6 +25,7 @@
 #   ELEVATION_MAPPING_FORCE_CUPY=1     # bypasses torch path (Orin sm_87, no torch)
 import os
 import re
+import sys
 import tempfile
 
 from ament_index_python.packages import get_package_share_directory
@@ -58,6 +59,17 @@ def generate_launch_description():
     velodyne_yaml = os.path.join(fast_lio_share, "config", "velodyne.yaml")
     nav2_yaml_path = os.path.join(WS, "config", "nav", "nav2_go2_full_stack.yaml")
     bt_dir = os.path.join(WS, "config", "nav", "behavior_trees")
+
+    # Resolve explore at config-time (nav2_params is built here, before the
+    # LaunchConfiguration would resolve). In explore mode use the EXPLORATION BT
+    # (navigate_to_pose_explore.xml) — same as the desktop ops2 launcher. The
+    # default no_spin BT clears the GLOBAL costmap on every plan failure, which
+    # wipes the accumulated trav-grid exploration map -> planner can never path
+    # to a frontier -> permanent "no valid path" loop, robot never moves. The
+    # explore BT clears LOCAL only so the global map accumulates.
+    explore_at_config = any("explore:=true" in a for a in sys.argv)
+    bt_to_pose = ("navigate_to_pose_explore.xml" if explore_at_config
+                  else "navigate_to_pose_no_spin_recovery.xml")
 
     tf_remaps = [
         ("/tf", f"/{ROBOT_NS}/tf"),
@@ -311,7 +323,7 @@ def generate_launch_description():
             "use_sim_time": "true",
             "robot_base_frame": "base_link",
             "default_nav_to_pose_bt_xml":
-                os.path.join(bt_dir, "navigate_to_pose_no_spin_recovery.xml"),
+                os.path.join(bt_dir, bt_to_pose),
             "default_nav_through_poses_bt_xml":
                 os.path.join(bt_dir, "navigate_through_poses_no_spin_recovery.xml"),
         },

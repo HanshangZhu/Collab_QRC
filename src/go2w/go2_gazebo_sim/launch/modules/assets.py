@@ -461,14 +461,29 @@ def build_dual_robot_stack(
     joint_states_wait_topic = f"/{ns}/joint_states"
     if cm_ns and cm_ns != f"/{ns}":
         joint_states_wait_topic = f"{cm_ns}/joint_states"
+    # Wait until joint_states publishes (controllers active) before stand_up.
+    # BOUNDED: the original `until ros2 topic echo ...; do sleep; done` was an
+    # INFINITE loop. When the external ros2 CLI can't deliver joint_states —
+    # the "external ros2 CLI hangs in this env" condition the benchmark hit
+    # under load (see fix(bench): log-based readiness) — that loop never
+    # returns, so stand_up_node never fires and the whole robot_actions stack
+    # (fast_lio, odom, cloud → trav grid) never starts → Nav2 "robot out of
+    # bounds". Now: per-attempt `timeout` so a single CLI hang can't block, and
+    # a hard cap so the gate ALWAYS exits and stand_up proceeds. Succeeds in a
+    # few s when joint_states is deliverable; gives up after ~20 s otherwise.
     wait_joint_states_ready = ExecuteProcess(
         cmd=[
             "bash",
             "-lc",
             (
-                f"until ros2 topic echo {joint_states_wait_topic} --once >/dev/null 2>&1; do "
-                "sleep 0.25; "
-                "done"
+                f"for i in $(seq 1 8); do "
+                f"  timeout 2.5 ros2 topic echo {joint_states_wait_topic} --once "
+                f"    >/dev/null 2>&1 && exit 0; "
+                "  sleep 0.2; "
+                "done; "
+                "echo '[wait_joint_states] CLI did not confirm joint_states in "
+                "~20s (ros2 CLI may be wedged); proceeding to stand_up anyway'; "
+                "exit 0"
             ),
         ],
         output="screen",
