@@ -76,12 +76,20 @@ MuJoCo ops2 (500 Hz)  OR  Mid-360 LiDAR (real/HIL)
 
 ### Quick Start scenarios
 
-**Single-robot ops2:**
+**Single-robot ops2 (Go2 walking — not Go2W):**
 ```bash
 ./scripts/launch/nav_test_slam_ops2_v4_go2.sh
 ```
+> **Note to include in README:** The ops2 scene uses the full SLAM-reconstructed
+> mesh (80×32 m, 982k vertices). MuJoCo collides `<geom type="mesh">` via the
+> convex hull of the entire mesh — at this scale that hull engulfs the robot's
+> standing volume, making the Go2W's wider/heavier footprint collision-unstable.
+> Single-robot ops2 therefore uses **Go2** (Menagerie walking quadruped) only.
+> The dual-robot mixed launch avoids this by replacing the mesh collision with
+> 44 hand-traced wall boxes (`slam_ops2_v4_mixed_handwalls.xml`), which is why
+> Go2W + Go2 works there but not in the single-robot visual-mesh scene.
 
-**Dual-robot ops2 (heterogeneous Go2W + Go2):**
+**Dual-robot ops2 (heterogeneous Go2W + Go2, hand-traced collision walls):**
 ```bash
 ./scripts/launch/nav_test_slam_ops2_v4_mixed.sh
 ```
@@ -154,6 +162,10 @@ python3 scripts/bench/summarize_dropout_benchmark.py /tmp/dropout_bench/<ts>/
    Scene assets (slam_ops2_v4_mixed_handwalls.xml), spawn points.
    Key fixes: blind disk, visited corridor, extent-seek, inflation 0.16.
    cfpa2_single_robot_ops2.yaml overlay.
+   **Robot choice note:** single-robot ops2 uses Go2 (not Go2W). The full SLAM
+   mesh collision hull (80×32 m whole-scene convex hull) engulfs the Go2W's
+   standing volume at this scale → collision-unstable. Dual-robot mixed works
+   with Go2W because it swaps to 44 hand-traced wall boxes instead.
 
 ## 7. Dropout Benchmark (~20 lines)
    benchmark_decentralisation_dropout.sh tunables.
